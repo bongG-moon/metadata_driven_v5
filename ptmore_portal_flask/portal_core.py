@@ -312,6 +312,24 @@ class ScheduleCreateRequest(BaseModel):
     """
 
     title: str = Field(..., min_length=1, max_length=200)
+    email_recipients: list[str] = Field(default_factory=list, max_length=100)
+
+    @field_validator("email_recipients")
+    @classmethod
+    def validate_emails(cls, values):
+        from schedule_mail import parse_recipients
+        return parse_recipients(values)
+
+    recipient_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("recipient_ids")
+    @classmethod
+    def validate_recipients(cls, values):
+        if values is None:
+            return None
+        if any(not re.fullmatch(r"[0-9]{7}", value) for value in values):
+            raise ValueError("실행 대상 사번은 7자리 숫자로 입력해 주세요.")
+        return list(dict.fromkeys(values))
     question: str = Field(..., min_length=1, max_length=20_000)
     repeat: str = Field(..., min_length=1, max_length=32)
     time: str | None = Field(default=None, max_length=5)
@@ -331,7 +349,20 @@ class ScheduleUpdateRequest(BaseModel):
     client cannot transfer or redirect someone else's schedule by editing it.
     """
 
+    email_recipients: list[str] | None = Field(default=None, max_length=100)
+
+    @field_validator("email_recipients")
+    @classmethod
+    def validate_emails(cls, values):
+        return None if values is None else ScheduleCreateRequest.validate_emails(values)
+
     title: str | None = Field(default=None, max_length=200)
+    recipient_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("recipient_ids")
+    @classmethod
+    def validate_recipients(cls, values):
+        return ScheduleCreateRequest.validate_recipients(values)
     question: str | None = Field(default=None, max_length=20_000)
     repeat: str | None = Field(default=None, max_length=32)
     time: str | None = Field(default=None, max_length=5)
@@ -801,7 +832,7 @@ def _normalise_phoenix_usage_history(
             {
                 "id": f"PHX-{index + 1}",
                 "employee_id": employee_id,
-                "user_name": employee_id,
+                "user_name": str(record.get("user_name") or employee_id),
                 "question": question,
                 "date": usage_date,
                 "query_time": query_time or occurred_at,
@@ -1065,7 +1096,69 @@ def _refresh_usage_archive_ranges(
             _close_usage_history_archive(archive)
 
 
-def _load_recent_usage_snapshot(*, full_refresh: bool = False) -> dict[str, Any]:
+def _load_recent_usage_snapshot(*, full_refresh: bool = False, cache_only: bool = False) -> dict[str, Any]:
+    """Keep readable MongoDB history available independently of Phoenix health."""
+    if _usage_history_archive_mode_from_env() != "configured":
+        if cache_only:
+            raise HTTPException(status_code=503, detail={"code": "archive_disabled"})
+        return _synchronize_recent_usage_snapshot(full_refresh=full_refresh)
+
+    start_day, end_day = _recent_kst_period(days=_USAGE_HISTORY_WINDOW_DAYS)
+    from usage_charts import chart_start, build_charts
+    configuration = _usage_history_archive_config_from_env()
+    if _usage_history_archive_configuration_errors(configuration):
+        raise _usage_archive_not_ready_error(configuration)
+    archive = None
+    try:
+        archive = _get_usage_history_archive()
+        chart_records = list(archive.read_records(start_day=chart_start(end_day), end_day=end_day))
+        records = [row for row in chart_records if str(row.get("date") or row.get("query_time") or "")[:10] >= start_day.isoformat()]
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "usage_history_archive_unavailable",
+            "message": "MongoDB 보관 이력을 읽을 수 없습니다. 연결 정보와 권한을 확인해 주세요.",
+        }) from exc
+    finally:
+        if archive is not None:
+            _close_usage_history_archive(archive)
+
+    warning_code = ""
+    if not cache_only:
+        try:
+            refreshed = _synchronize_recent_usage_snapshot(full_refresh=full_refresh)
+            older = [row for row in chart_records if str(row.get("date") or row.get("query_time") or "")[:10] < start_day.isoformat()]
+            refreshed["usage_charts"] = build_charts([*older, *refreshed["raw_records"]], end_day)
+            return refreshed
+        except HTTPException as exc:
+            code = exc.detail.get("code", "") if isinstance(exc.detail, dict) else ""
+            if code not in {"phoenix_usage_not_ready", "phoenix_usage_unavailable"}:
+                raise
+            warning_code = code
+    message = (
+        "Phoenix 갱신 실패 · MongoDB 보관 이력 표시 중"
+        if warning_code else "MongoDB 보관 이력을 표시합니다. Phoenix 갱신은 별도로 진행됩니다."
+    )
+    if not records:
+        message += " 선택 기간에 저장된 사용 이력이 없습니다."
+    return {
+        "start_day": start_day, "end_day": end_day, "raw_records": records,
+        "usage_charts": build_charts(chart_records, end_day),
+        "usage_history": _normalise_phoenix_usage_history(records, start_day=start_day, end_day=end_day),
+        "source": {
+            "mode": "phoenix", "status": "cached", "label": "MongoDB 보관 이력",
+            "detail": message, "warning_code": warning_code,
+            "fetched_at": datetime.now(_KST).isoformat(),
+            "period": {"start": start_day.isoformat(), "end": end_day.isoformat()},
+            "project_count": len({str(row.get("project") or row.get("source_project") or "") for row in records}),
+            "archive": {"mode": "configured", "status": "cached", "message": message,
+                        "collection": configuration.collection, "full_refresh": False,
+                        "refresh_requested": full_refresh, "updated_day_count": 0,
+                        "updated_range_count": 0},
+        },
+    }
+
+
+def _synchronize_recent_usage_snapshot(*, full_refresh: bool = False) -> dict[str, Any]:
     """Load recent history from MongoDB and refresh only required Phoenix days.
 
     In the configured archive mode the normal dashboard path always refreshes
@@ -1865,7 +1958,10 @@ class MongoMetadataLiveReader:
     ) -> Mapping[str, Any] | None:
         """Read one exact ``_id`` using the narrow detail projection only."""
 
-        projection = _METADATA_LIVE_DETAIL_MONGO_PROJECTIONS[metadata_type]
+        projection = dict(_METADATA_LIVE_DETAIL_MONGO_PROJECTIONS[metadata_type])
+        for field in ("raw_text", "selection_criteria", "original_text"):
+            projection[field] = 1
+            projection[f"payload.{field}"] = 1
         collection = self._database[collection_name]
         document = self._run(
             lambda: collection.find_one({"_id": record_id}, projection)
@@ -2292,6 +2388,11 @@ def _live_metadata_detail_item(
     safe_payload = _safe_metadata_detail_payload(metadata_type, payload)
     if safe_payload:
         item["payload"] = safe_payload
+    # 원문도 기존 비밀값 마스킹을 거친 뒤 별도 상세 필드로만 노출합니다.
+    for field in ("raw_text", "selection_criteria", "original_text"):
+        value = document.get(field, payload.get(field))
+        if value is not None:
+            item[field] = _safe_metadata_detail_value(value)
     return item
 
 
@@ -3479,7 +3580,11 @@ class PortalScheduleStore(Protocol):
 
 
 _SCHEDULE_DOCUMENT_PROJECTION = {
+    "email_recipients": 1,
     "_id": 1,
+    "group_id": 1,
+    "registrant_id": 1,
+    "registrant_name": 1,
     "title": 1,
     "question": 1,
     "repeat": 1,
@@ -4302,6 +4407,11 @@ def _schedule_response(document: Mapping[str, Any]) -> dict[str, Any]:
     updated_at = _parse_schedule_timestamp(document.get("updated_at"))
     return {
         "id": schedule_id,
+        "group_id": document.get("group_id", schedule_id),
+        "recipient_ids": document.get("recipient_ids") or [owner_id],
+        "email_recipients": document.get("email_recipients") or [],
+        "email_delivery_status": "not_connected",
+        "execution_members": document.get("execution_members", []),
         "title": normalized["title"],
         "question": normalized["question"],
         "repeat": normalized["repeat"],
@@ -5431,6 +5541,9 @@ def _build_usage_dashboard(
             "user_name": activity["user_name"],
             "distinct_days": len(activity["distinct_dates"]),
             "chat_count": activity["chat_count"],
+            "usage_dates": sorted(activity["distinct_dates"]),
+            "daily_average": round(activity["chat_count"] / max(day_count, 1), 2),
+            "usage_day_average": round(activity["chat_count"] / max(len(activity["distinct_dates"]), 1), 2),
         }
         for activity in user_activity.values()
         if len(activity["distinct_dates"]) >= min_distinct_days
@@ -5535,7 +5648,7 @@ def _build_usage_dashboard(
         ],
         "usage_by_day": usage_by_day,
         "channel_mix": channel_mix,
-        "active_users": active_users[:5],
+        "active_users": active_users,
         "active_user_count": len(active_users),
         "active_user_rule": {
             "min_distinct_days": min_distinct_days,
@@ -5687,7 +5800,8 @@ async def portal_data(request: Request) -> dict[str, Any]:
 
 def _schedule_store_or_503() -> PortalScheduleStore:
     try:
-        return _get_portal_schedule_store()
+        from schedule_groups import GroupScheduleStore
+        return GroupScheduleStore(_get_portal_schedule_store())
     except PortalScheduleStoreError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -5797,6 +5911,8 @@ def create_schedule(
     document = {
         "_id": _new_schedule_id(),
         **fields,
+        "recipient_ids": request_body.recipient_ids or [access.viewer.employee_id],
+        "email_recipients": request_body.email_recipients,
         "owner_id": access.viewer.employee_id,
         "owner_name": _schedule_owner_name_for_save(
             access.viewer.employee_id,
@@ -5847,6 +5963,10 @@ def update_schedule(
         values = _schedule_editable_values(existing)
         values.update(patch)
         fields = _schedule_values_or_422(values)
+        if patch.get("recipient_ids") is not None:
+            fields["recipient_ids"] = patch["recipient_ids"]
+        if patch.get("email_recipients") is not None:
+            fields["email_recipients"] = patch["email_recipients"]
         fields["owner_name"] = _schedule_owner_name_for_save(
             existing.get("owner_id"),
             existing.get("owner_name"),
@@ -6800,7 +6920,7 @@ def dashboard_usage_data(request: Request) -> dict[str, Any]:
 
     access = _portal_access(request)
     usage_policy = _normalise_portal_settings(access.settings)["usage_policy"]
-    snapshot = _load_recent_usage_snapshot()
+    snapshot = _load_recent_usage_snapshot(cache_only=request.query_params.get("cache_only") == "true")
     return _dashboard_usage_response(snapshot, usage_policy)
 
 
@@ -6822,7 +6942,7 @@ def _dashboard_usage_response(
     )
     return {
         "source": snapshot["source"],
-        "dashboard": dashboard,
+        "dashboard": {**dashboard, "usage_charts": snapshot.get("usage_charts", {})},
         "usage_history": usage_history,
     }
 

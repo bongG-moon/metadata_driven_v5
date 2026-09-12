@@ -624,6 +624,7 @@ class MongoUsageHistoryArchive:
             "query_time": 1,
             "platform": 1,
             "user_id": 1,
+            "user_name": 1,
             "question": 1,
             "refresh_started_at": 1,
         }
@@ -663,6 +664,7 @@ class MongoUsageHistoryArchive:
                 "query_time": _text(document.get("query_time")),
                 "platform": _text(document.get("platform")),
                 "user_id": _text(document.get("user_id")),
+                "user_name": _text(document.get("user_name")),
                 "question": _text(document.get("question")),
                 "project": _text(document.get("source_project")),
                 "trace_id": _text(document.get("trace_id")),

@@ -198,7 +198,7 @@ def _request_model(model_type: type[_MODEL]) -> _MODEL:
             detail={
                 "code": "request_validation_error",
                 "message": "입력값을 확인해 주세요.",
-                "errors": exc.errors(include_url=False),
+                "errors": exc.errors(include_url=False, include_context=False),
             },
         ) from exc
 
@@ -273,7 +273,7 @@ def _safe_local_path(sub_path: str | None = None) -> str:
 def main():
     if _auth_mode() == "sso" and session.get("logFlag") is not True:
         return redirect(url_for("login", ORIGIN=request.url))
-    return render_template("sample.html")
+    return render_template("main.html")
 
 
 @app.route("/.well-known/appspecific/com.chrome.devtools.json")

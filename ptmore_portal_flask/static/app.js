@@ -132,6 +132,7 @@ const $$ = (selector, parent = document) => [...parent.querySelectorAll(selector
 
 function svgIcon(name, className = "") {
   const paths = {
+    user: '<circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
     check: '<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.3 2.3 4.8-5.1"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/>',
     alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 8.3v4.4m0 3h.01"/>',
@@ -268,7 +269,7 @@ function normalizeDashboardUsagePayload(payload) {
   if (configuredMode !== "phoenix") {
     throw new Error("사용 이력 API의 조회 모드를 확인하지 못했습니다.");
   }
-  if (configuredStatus !== "connected") {
+  if (!["connected", "cached"].includes(configuredStatus)) {
     throw new Error("사용 이력 API의 연결 상태를 확인하지 못했습니다.");
   }
   const mode = "phoenix";
@@ -361,7 +362,7 @@ function renderDashboardSourceStatus() {
 
   if (fullRefresh) {
     const admin = isAdmin();
-    const canRefreshAll = admin && usage.state !== "loading" && !fullRefreshInProgress;
+    const canRefreshAll = admin && usage.state !== "loading" && !fullRefreshInProgress && !state.dashboardUsageFetching;
     fullRefresh.hidden = !admin;
     fullRefresh.disabled = !canRefreshAll;
     fullRefresh.classList.toggle("is-loading", fullRefreshInProgress);
@@ -381,6 +382,13 @@ function renderDashboardSourceStatus() {
   }
 
   if (usage.state === "live") {
+    if (source.status === "cached") {
+      container.classList.add("is-preview");
+      icon.innerHTML = svgIcon(source.warning_code ? "alert" : "database");
+      title.textContent = source.warning_code ? "Phoenix 갱신 실패 · 보관 이력 표시" : "MongoDB 보관 이력";
+      detail.textContent = source.detail;
+      return;
+    }
     container.classList.add("is-live");
     icon.innerHTML = svgIcon("check");
     title.textContent = hasFullRefreshResult
@@ -412,7 +420,9 @@ function renderDashboardSourceStatus() {
 }
 
 async function loadDashboardUsage({ notifyOnError = false } = {}) {
-  if (!state.portal || state.dashboardUsageFullRefreshing) return;
+  if (!state.portal || state.dashboardUsageFullRefreshing || state.dashboardUsageFetching) return;
+  state.dashboardUsageFetching = true;
+  let cachedShown = false;
 
   // Schedule runs come from a separate MongoDB collection.  Retain the last
   // safely loaded run slice while Phoenix usage refreshes, so an unrelated
@@ -434,6 +444,16 @@ async function loadDashboardUsage({ notifyOnError = false } = {}) {
   renderMetadataApiIndicator();
 
   try {
+    try {
+      const cached = await fetch("/api/dashboard/usage?cache_only=true", {
+        headers: portalRequestHeaders(), cache: "no-store",
+      });
+      if (cached.ok) {
+        applyDashboardUsagePayload(await cached.json());
+        cachedShown = true;
+        renderDashboard();
+      }
+    } catch (error) { console.warn("Archive snapshot not available", error); }
     const response = await fetch("/api/dashboard/usage", {
       headers: portalRequestHeaders(),
       cache: "no-store",
@@ -448,7 +468,13 @@ async function loadDashboardUsage({ notifyOnError = false } = {}) {
 
     applyDashboardUsagePayload(payload);
   } catch (error) {
-    // A configured Phoenix failure must never leave stale dashboard values in view.
+    if (cachedShown) {
+      const source = state.dashboardUsage.source;
+      source.detail = "최신 이력 갱신 실패 · 앞서 읽은 MongoDB 보관 이력을 유지합니다.";
+      if (source.archive) source.archive.message = source.detail;
+      if (notifyOnError) showToast(source.detail);
+      return;
+    }
     console.warn("dashboard usage unavailable", error);
     const message = error?.message || "Phoenix 사용 이력을 불러오지 못했습니다. 다시 시도해 주세요.";
     state.portal.dashboard = {
@@ -460,6 +486,7 @@ async function loadDashboardUsage({ notifyOnError = false } = {}) {
     state.dashboardUsage = { state: "error", source: null, message };
     if (notifyOnError) showToast(message);
   } finally {
+    state.dashboardUsageFetching = false;
     renderDashboard();
     renderMetadataApiIndicator();
   }
@@ -470,6 +497,7 @@ async function refreshDashboardUsageFull() {
     !state.portal
     || !isAdmin()
     || state.dashboardUsageFullRefreshing
+    || state.dashboardUsageFetching
     || dashboardUsageState().state === "loading"
   ) return;
 
@@ -491,7 +519,7 @@ async function refreshDashboardUsageFull() {
     }
 
     applyDashboardUsagePayload(payload);
-    showToast("최근 3주 사용 이력을 전체 새로고침했습니다.");
+    showToast(payload.source?.status === "cached" ? payload.source.detail : "최근 3주 사용 이력을 전체 새로고침했습니다.");
   } catch (error) {
     console.error("dashboard usage full refresh failed", error);
     showToast(error?.message || "최근 3주 사용 이력을 전체 새로고침하지 못했습니다.");
@@ -998,6 +1026,84 @@ function channelLabel(channel) {
   }[channel] || channel;
 }
 
+function renderCombinedCharts(charts) {
+  return [["monthly", "월별 · 최근 3개월"], ["weekly", "주별 · 최근 4주"], ["daily", "일별 · 최근 14일"]].map(([key, title]) => {
+    const rows = charts?.[key] || [];
+    if (!rows.length) return `<section class="combined-chart"><h4>${title}</h4><p>MongoDB 보관 이력 조회가 필요합니다.</p></section>`;
+    const maxUsers = Math.max(1, ...rows.map(r => Number(r.unique_users) || 0));
+    const maxChats = Math.max(1, ...rows.map(r => Number(r.chat_count) || 0));
+    const chartWidth = key === "daily" ? 760 : 380;
+    const plotWidth = chartWidth - 90;
+    const x = i => 42 + (i + 0.5) * plotWidth / rows.length;
+    const y = (value, max) => 180 - 140 * value / max;
+    const width = Math.min(36, plotWidth * 0.5 / rows.length);
+    // Horizontal Bezier tangents soften each segment without overshooting its values.
+    const points = rows.map((r, i) => [x(i), y(r.unique_users, maxUsers)]);
+    const curve = points.map(([px, py], i) => {
+      if (!i) return `M ${px},${py}`;
+      const [prevX, prevY] = points[i - 1];
+      const bend = (px - prevX) * 0.35;
+      return `C ${prevX+bend},${prevY} ${px-bend},${py} ${px},${py}`;
+    }).join(" ");
+    return `<section class="combined-chart combined-chart-${key}"><div class="bento-chart-heading"><h4>${title}</h4><span>${rows.reduce((sum,r) => sum + Number(r.chat_count || 0), 0).toLocaleString()}<small> 건</small></span></div><div class="combined-chart-scroll"><svg viewBox="0 0 ${chartWidth} 225" role="group" aria-label="${title}: 채팅 막대(왼쪽 축), 사용자 곡선(오른쪽 축)">
+      <defs><linearGradient id="usage-bar-${key}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#7382e8"/><stop offset="100%" stop-color="#c8cff9"/></linearGradient></defs>
+      <text x="42" y="18" class="chart-axis-label">채팅 (건)</text><text x="${chartWidth-48}" y="18" text-anchor="end" class="chart-axis-label">사용자 (명)</text>
+      ${[0, 0.5, 1].map(f => `<line x1="42" x2="${chartWidth-48}" y1="${180-140*f}" y2="${180-140*f}" stroke="#e6eaf3"/><text x="34" y="${184-140*f}" text-anchor="end">${Math.round(maxChats*f)}</text><text x="${chartWidth-40}" y="${184-140*f}">${Math.round(maxUsers*f)}</text>`).join("")}
+      ${rows.map((r, i) => `<rect x="${x(i)-width/2}" y="${y(r.chat_count,maxChats)}" width="${width}" height="${140*r.chat_count/maxChats}" rx="4" fill="#8997ed"/><text x="${x(i)}" y="207" text-anchor="middle">${escapeHtml(r.label)}</text>`).join("")}
+      <path class="usage-user-curve" d="${curve}" fill="none" stroke="#7b8bad" stroke-width="2.5"/>
+      ${rows.map((r,i) => `<circle cx="${x(i)}" cy="${y(r.unique_users,maxUsers)}" r="3" fill="#7b8bad"/>`).join("")}
+      ${rows.map((r,i) => `<rect class="chart-hit" x="${x(i)-plotWidth/rows.length/2}" y="20" width="${plotWidth/rows.length}" height="190" tabindex="0" role="button" aria-label="${escapeHtml(r.label)}: 사용자 ${r.unique_users}명, 채팅 ${r.chat_count}건" data-period="${escapeHtml(r.label)}" data-range="${escapeHtml(r.start)} ~ ${escapeHtml(r.end)}" data-users="${Number(r.unique_users)||0}" data-chats="${Number(r.chat_count)||0}"/>`).join("")}
+      </svg></div><div class="chart-tooltip" role="tooltip" hidden></div><details><summary>집계 숫자 보기</summary><table><thead><tr><th>기간</th><th>사용자</th><th>채팅</th></tr></thead><tbody>${rows.map(r => `<tr><td>${escapeHtml(r.label)}</td><td>${r.unique_users}명</td><td>${r.chat_count}건</td></tr>`).join("")}</tbody></table></details></section>`;
+  }).join("");
+}
+
+function bindChartTooltips() {
+  const container = $("#usage-chart");
+  const hide = () => container.querySelectorAll(".chart-tooltip").forEach(t => { t.hidden = true; });
+  const show = event => {
+    const hit = event.target.closest?.(".chart-hit");
+    if (!hit) { if (event.type === "pointermove") hide(); return; }
+    hide();
+    const card = hit.closest(".combined-chart");
+    const tip = card.querySelector(".chart-tooltip");
+    const d = hit.dataset;
+    tip.innerHTML = `<strong>${escapeHtml(d.period)}</strong><small>${escapeHtml(d.range)}</small><div><span><i class="legend-dot user-dot"></i>채팅</span><b>${Number(d.chats).toLocaleString()}<small> 건</small></b></div><div><span><i class="legend-line"></i>사용자</span><b>${Number(d.users).toLocaleString()}<small> 명</small></b></div>`;
+    tip.hidden = false;
+    const box = card.getBoundingClientRect();
+    const target = hit.getBoundingClientRect();
+    const px = event.clientX || target.left + target.width / 2;
+    const py = event.clientY || target.top + 25;
+    tip.style.left = `${Math.max(8, Math.min(px-box.left+12, box.width-tip.offsetWidth-8))}px`;
+    tip.style.top = `${Math.max(8, Math.min(py-box.top-tip.offsetHeight-12, box.height-tip.offsetHeight-8))}px`;
+  };
+  container.onpointermove = show;
+  container.onclick = show;
+  container.onfocusin = show;
+  container.onpointerleave = hide;
+  container.onfocusout = hide;
+  container.onkeydown = event => { if (event.key === "Escape") hide(); };
+}
+
+function downloadActiveUsers() {
+  const dashboard = state.portal?.dashboard;
+  if (!dashboard || dashboard.unavailable) return;
+  const cell = value => {
+    let text = String(value ?? "");
+    if (/^[\s]*[=+@-]/.test(text)) text = "'" + text;
+    return '"' + text.replaceAll('"', '""') + '"';
+  };
+  const rows = [["집계기간", "사번", "이름", "사용 일수", "사용 일자", "전체 채팅 건수", "일평균 채팅(21일)", "사용일 평균 채팅"]];
+  for (const user of dashboard.active_users || []) rows.push([
+    dashboard.range_label, user.employee_id, user.user_name, user.distinct_days,
+    (user.usage_dates || []).join("; "), user.chat_count, user.daily_average, user.usage_day_average,
+  ]);
+  const url = URL.createObjectURL(new Blob(["\ufeff" + rows.map(row => row.map(cell).join(",")).join("\r\n")], {type: "text/csv;charset=utf-8"}));
+  const link = document.createElement("a");
+  link.href = url; link.download = "ptmore_active_users_21days.csv";
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function renderDashboard() {
   const dashboard = state.portal?.dashboard || emptyUsageDashboard();
   const kpis = Array.isArray(dashboard.kpis) ? dashboard.kpis : [];
@@ -1022,19 +1128,10 @@ function renderDashboard() {
 
   $("#usage-total").textContent = dashboard.unavailable
     ? "집계 대기"
-    : `누적 ${Number(dashboard.total_chat_count || 0).toLocaleString()}건`;
-  $("#usage-chart").innerHTML = usageByDay.length
-    ? usageByDay
-    .map((item) => `
-      <div class="bar-wrap">
-        <div class="bar-pair">
-          <div class="chart-bar user-bar" data-value="사용자 ${item.unique_users}명" style="height:${Math.max(item.user_height, 12)}%"></div>
-          <div class="chart-bar chat-bar" data-value="채팅 ${item.chat_count}건" style="height:${Math.max(item.chat_height, 12)}%"></div>
-        </div>
-        <span>${escapeHtml(item.label)}</span>
-      </div>`)
-    .join("")
-    : `<div class="usage-chart-empty">${escapeHtml(dashboard.empty_message || "표시할 사용 이력이 없습니다.")}</div>`;
+    : `최근 21일 · ${Number(dashboard.total_chat_count || 0).toLocaleString()}건`;
+  $("#usage-chart").innerHTML = renderCombinedCharts(dashboard.usage_charts);
+  bindChartTooltips();
+  $("#active-user-download").disabled = Boolean(dashboard.unavailable);
 
   $("#active-user-summary").innerHTML = `
     <div class="active-user-number"><strong>${dashboard.unavailable ? "—" : Number(dashboard.active_user_count || 0)}</strong><span>명</span></div>
@@ -1044,7 +1141,7 @@ function renderDashboard() {
   $("#active-user-list").innerHTML = activeUsers.length
     ? activeUsers
         .map((user) => `
-          <li><div><strong>${escapeHtml(usageRecordName(user))}</strong><span>${escapeHtml(usageRecordEmployeeId(user))}</span></div><div><b>${escapeHtml(user.distinct_days ?? 0)}일</b><span>${escapeHtml(user.chat_count ?? 0)}건</span></div></li>`)
+          <li><div><strong>${escapeHtml(usageRecordName(user))}</strong><span>${escapeHtml(usageRecordEmployeeId(user))}</span></div><div><b>${escapeHtml(user.distinct_days ?? 0)}일 · ${escapeHtml(user.chat_count ?? 0)}건</b><span>일평균 ${escapeHtml(user.daily_average ?? 0)}건</span></div></li>`)
         .join("")
     : `<li class="empty-list">${dashboard.unavailable ? "사용 이력을 확인하면 활성 사용자를 집계합니다." : "현재 기준을 충족한 사용자가 없습니다."}</li>`;
 
@@ -1333,6 +1430,8 @@ function renderSchedules() {
         .map((schedule) => {
           const interval = isIntervalSchedule(schedule);
           const ruleLabel = scheduleRuleLabel(schedule);
+          const emailCount = new Set((Array.isArray(schedule.email_recipients) ? schedule.email_recipients : [])
+            .map(address => String(address).trim().toLowerCase()).filter(Boolean)).size;
           const timingLabel = interval ? scheduleWindowLabel(schedule) : schedule.next_run;
           const intervalNextRun = interval
             ? `<div><span>다음 실행</span><strong>${escapeHtml(schedule.next_run)}</strong></div>`
@@ -1349,13 +1448,15 @@ function renderSchedules() {
             <div><span>반복</span><strong>${escapeHtml(ruleLabel)}</strong></div>
             <div><span>${interval ? "실행 구간" : "다음 실행"}</span><strong class="${interval ? "interval-window" : ""}">${escapeHtml(timingLabel)}</strong></div>
             ${intervalNextRun}
-            <div><span>발송 대상</span><strong>${SCHEDULE_DELIVERY_LABEL}</strong></div>
+            <div><span>실행 대상</span><strong>CUBE 개인 DM · ${(schedule.recipient_ids || [schedule.owner_id]).length}명</strong></div>
+            <div class="schedule-mail-target"><span>메일 수신 대상</span><strong>${emailCount ? `메일 등록 · ${emailCount}명` : "등록 없음"}</strong>${emailCount ? '<small>발송 연동 준비 중</small>' : ""}</div>
             <div><span>등록자</span><strong>${escapeHtml(schedule.owner)}</strong></div>
           </div>
           <div class="schedule-card-footer">
             <span class="last-run">최근 실행 · ${escapeHtml(schedule.last_run)}</span>
             <div class="schedule-actions">${scheduleActions(schedule)}</div>
           </div>
+          <details class="schedule-recipients"><summary>사용자별 실행 일정 보기</summary>${(schedule.execution_members || []).map(member => `<div class="schedule-member-timing"><strong class="recipient-employee-id">${escapeHtml(member.employee_id)}</strong><span>${escapeHtml(member.status === "active" ? `실행 예정 · ${formatScheduleDateTime(member.next_run_at, "예정 시각 확인 필요")}` : "일시중지 · 실행 예정 없음")}</span><small>최근 실행 · ${escapeHtml(member.last_run_at ? formatScheduleDateTime(member.last_run_at, "시각 확인 필요") : "이력 없음")}${member.last_run_status ? ` · ${escapeHtml(member.last_run_status)}` : ""}</small></div>`).join("")}</details>
         </article>`;
         })
         .join("")
@@ -1599,6 +1700,9 @@ function metadataPayloadFieldNames(metadataType = state.metadataType) {
 
 function metadataDetailRecordForDisplay(item, metadataType = state.metadataType) {
   const record = {};
+  for (const field of ["raw_text", "selection_criteria", "original_text"]) {
+    if (item?.[field] != null) record[field] = item[field];
+  }
   metadataDetailFieldNames(metadataType).forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(item || {}, field)) record[field] = item[field];
   });
@@ -1736,8 +1840,25 @@ async function copyMetadataDetailJson() {
     await navigator.clipboard.writeText(text);
     showToast("상세 JSON을 복사했습니다.");
   } catch (error) {
-    console.warn("metadata detail copy failed", error);
-    showToast("브라우저 복사 권한을 확인해 주세요.");
+    // HTTP 사내 페이지에서는 Clipboard API가 없어도 사용자 클릭으로 복사합니다.
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.style.cssText = "position:fixed;left:0;top:0;opacity:0;pointer-events:none";
+    const focused = document.activeElement;
+    document.body.appendChild(input);
+    input.focus(); input.select();
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch (_) { /* 수동 복사로 안내 */ }
+    input.remove();
+    focused?.focus();
+    if (copied) showToast("상세 JSON을 복사했습니다.");
+    else {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents($("#metadata-detail-json"));
+      selection?.removeAllRanges(); selection?.addRange(range);
+      showToast("JSON을 선택했습니다. Ctrl+C로 복사해 주세요.");
+    }
   }
 }
 
@@ -2901,7 +3022,125 @@ function intervalMinutes(value) {
 
 function intervalLabel(value) {
   const minutes = intervalMinutes(value);
-  return minutes === 60 ? "1시간마다" : `${minutes}분마다`;
+  const hours = Math.floor(minutes / 60), rest = minutes % 60;
+  return `${hours ? `${hours}시간` : ""}${hours && rest ? " " : ""}${rest ? `${rest}분` : ""}마다`;
+}
+
+function enhancePortalSelect(select, label) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "portal-select";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "repeat-picker-button";
+  trigger.setAttribute("aria-label", label);
+  trigger.setAttribute("aria-haspopup", "listbox");
+  const list = document.createElement("div");
+  list.className = "repeat-picker-list";
+  list.setAttribute("role", "listbox");
+  list.setAttribute("aria-label", label);
+  const close = () => { list.hidden = true; trigger.setAttribute("aria-expanded", "false"); };
+  const refresh = () => {
+    trigger.innerHTML = `<span>${escapeHtml(select.selectedOptions[0]?.textContent || "선택")}</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>`;
+    trigger.disabled = select.disabled;
+    list.replaceChildren();
+    Array.from(select.options).forEach(option => {
+      const item = document.createElement("button");
+      item.type = "button"; item.tabIndex = -1;
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", String(option.selected));
+      item.textContent = option.textContent + (option.selected ? "  ✓" : "");
+      item.onclick = () => { select.value = option.value; select.dispatchEvent(new Event("change", {bubbles:true})); refresh(); close(); trigger.focus(); };
+      list.appendChild(item);
+    });
+  };
+  const open = () => { refresh(); list.hidden = false; trigger.setAttribute("aria-expanded", "true"); list.children[Math.max(0, select.selectedIndex)]?.focus(); };
+  trigger.onclick = () => list.hidden ? open() : close();
+  wrapper.onkeydown = event => {
+    if (event.key === "Escape") { event.preventDefault(); close(); trigger.focus(); }
+    else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      if (list.hidden) { open(); return; }
+      const items = Array.from(list.children), index = items.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length-1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === "Tab") close();
+  };
+  wrapper.onfocusout = event => { if (!wrapper.contains(event.relatedTarget)) close(); };
+  select.hidden = true;
+  select.after(wrapper); wrapper.append(trigger, list);
+  refresh(); close();
+}
+
+function enhanceScheduleTimeInputs() {
+  const form = $("#schedule-form");
+  for (const name of ["time", "start_time", "end_time"]) {
+    const input = form.elements[name];
+    input.parentElement.querySelector(".portal-time-fields")?.remove();
+    const row = document.createElement("div"); row.className = "portal-time-fields";
+    const [hour, minute] = (input.value || "09:00").split(":");
+    const hourSelect = document.createElement("select"), minuteSelect = document.createElement("select");
+    for (let i=0; i<24; i++) hourSelect.add(new Option(`${String(i).padStart(2,"0")}시`, String(i).padStart(2,"0")));
+    for (let i=0; i<60; i++) minuteSelect.add(new Option(`${String(i).padStart(2,"0")}분`, String(i).padStart(2,"0")));
+    hourSelect.value = hour; minuteSelect.value = minute;
+    const update = () => { input.value = `${hourSelect.value}:${minuteSelect.value}`; input.dispatchEvent(new Event("change", {bubbles:true})); };
+    hourSelect.onchange = update; minuteSelect.onchange = update;
+    input.hidden = true;
+    const labelContainer = input.closest("label");
+    if (labelContainer) {
+      const group = document.createElement("div");
+      group.className = labelContainer.className + " portal-time-group";
+      if (labelContainer.id) group.id = labelContainer.id;
+      group.append(...labelContainer.childNodes);
+      labelContainer.replaceWith(group);
+    }
+    input.after(row); row.append(hourSelect, minuteSelect);
+    const label = input.parentElement.querySelector("span")?.textContent || "시간";
+    enhancePortalSelect(hourSelect, `${label} 시`); enhancePortalSelect(minuteSelect, `${label} 분`);
+  }
+}
+
+function syncRepeatPicker() {
+  const picker = $(".repeat-picker");
+  const select = $("#schedule-form").elements.repeat;
+  const button = $("#repeat-picker-button");
+  const list = $("#repeat-picker-list");
+  $("#repeat-picker-value").textContent = select.selectedOptions[0]?.textContent || "선택";
+  const close = () => { list.hidden = true; button.setAttribute("aria-expanded", "false"); };
+  close();
+  list.innerHTML = Array.from(select.options).map(option => `<button type="button" role="option" tabindex="-1" aria-selected="${option.selected}" data-value="${escapeHtml(option.value)}"><span>${escapeHtml(option.textContent)}</span><span aria-hidden="true">${option.selected ? "✓" : ""}</span></button>`).join("");
+  const options = () => Array.from(list.querySelectorAll("[role=option]"));
+  const open = () => {
+    list.hidden = false; button.setAttribute("aria-expanded", "true");
+    options()[Math.max(0, select.selectedIndex)]?.focus();
+  };
+  button.onclick = () => list.hidden ? open() : close();
+  button.onkeydown = event => {
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) { event.preventDefault(); open(); }
+  };
+  list.onclick = event => {
+    const option = event.target.closest("[role=option]");
+    if (!option) return;
+    select.value = option.dataset.value;
+    select.dispatchEvent(new Event("change", {bubbles: true}));
+    syncRepeatPicker(); button.focus();
+  };
+  list.onkeydown = event => {
+    const items = options();
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "Escape") { event.preventDefault(); close(); button.focus(); }
+    else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length-1 : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next]?.focus();
+    } else if (event.key === "Tab") close();
+  };
+  picker.onfocusout = event => { if (!picker.contains(event.relatedTarget)) close(); };
+  if (!picker.dataset.bound) {
+    document.addEventListener("pointerdown", event => {
+      if (!picker.contains(event.target)) { list.hidden = true; button.setAttribute("aria-expanded", "false"); }
+    });
+    picker.dataset.bound = "true";
+  }
 }
 
 function formattedTime(value) {
@@ -2964,13 +3203,39 @@ function scheduleNextRun(schedule) {
   );
 }
 
+function intervalInputMinutes(hours, minutes) {
+  if (String(hours).trim() === "" || String(minutes).trim() === "") return null;
+  const h = Number(hours), m = Number(minutes), total = h * 60 + m;
+  return Number.isInteger(h) && Number.isInteger(m) && h >= 0 && h <= 24
+    && m >= 0 && m <= 60 && total >= 1 && total <= 1440 ? total : null;
+}
+
+function setupIntervalEditor() {
+  const form = $("#schedule-form");
+  const minutes = Number(form.elements.interval_minutes.value);
+  const hourInput = form.elements.interval_hours;
+  const minuteInput = form.elements.interval_extra_minutes;
+  hourInput.value = String(Math.floor(minutes / 60));
+  minuteInput.value = String(minutes % 60);
+  const update = () => {
+    const converted = intervalInputMinutes(hourInput.value, minuteInput.value);
+    hourInput.setCustomValidity(converted === null ? "시간 0~24, 분 0~60의 정수로 합계 1분~24시간을 입력해 주세요." : "");
+    form.elements.interval_minutes.value = converted === null ? "" : String(converted);
+    $("#interval-mode-label").textContent = converted === null ? "반복 간격을 확인해 주세요" : `${intervalLabel(converted)} 반복 실행`;
+    updateSchedulePreview();
+  };
+  hourInput.oninput = update;
+  minuteInput.oninput = update;
+  update();
+}
+
 function scheduleTimingFromForm(form) {
   const repeat = String(form.elements.repeat.value || "").trim();
   const interval = isIntervalRepeat(repeat);
   return {
     repeat,
     time: interval ? "" : String(form.elements.time.value || "").trim(),
-    interval_minutes: interval ? intervalMinutes(form.elements.interval_minutes.value) : null,
+    interval_minutes: interval ? intervalInputMinutes(form.elements.interval_hours.value, form.elements.interval_extra_minutes.value) : null,
     start_time: interval ? String(form.elements.start_time.value || "").trim() : "",
     end_time: interval ? String(form.elements.end_time.value || "").trim() : "",
   };
@@ -2983,6 +3248,11 @@ function validateScheduleTiming(timing, form) {
   endInput.setCustomValidity("");
 
   if (!isIntervalRepeat(timing.repeat)) return Boolean(timing.time);
+  if (timing.interval_minutes === null) {
+    form.elements.interval_hours.reportValidity();
+    showToast("시간 0~24, 분 0~60을 입력하세요. 합계는 1분~24시간이어야 합니다.");
+    return false;
+  }
   if (!timing.start_time || !timing.end_time) {
     showToast("간격 반복은 시작 시간과 종료 시간을 모두 입력해 주세요.");
     return false;
@@ -3001,7 +3271,7 @@ function syncScheduleTimingFields() {
   const singleTime = $("#schedule-single-time-field");
   const intervalFields = $("#interval-schedule-fields");
   const timeInput = form.elements.time;
-  const intervalInputs = [form.elements.interval_minutes, form.elements.start_time, form.elements.end_time];
+  const intervalInputs = [form.elements.interval_minutes, form.elements.interval_hours, form.elements.interval_extra_minutes, form.elements.start_time, form.elements.end_time];
 
   singleTime.hidden = interval;
   intervalFields.hidden = !interval;
@@ -3020,6 +3290,10 @@ function updateSchedulePreview() {
   form.elements.start_time.setCustomValidity("");
   form.elements.end_time.setCustomValidity("");
   const timing = scheduleTimingFromForm(form);
+  if (isIntervalRepeat(timing.repeat) && timing.interval_minutes === null) {
+    $("#next-preview").textContent = "유효한 반복 간격을 입력해 주세요.";
+    return;
+  }
   $("#next-preview").textContent = nextRunLabel(
     timing.repeat,
     timing.time,
@@ -3029,11 +3303,51 @@ function updateSchedulePreview() {
   );
 }
 
+function scheduleRecipientIds() {
+  return $("#schedule-form").elements.recipient_ids.value.split(/[;,\s]+/).filter(Boolean);
+}
+
+function renderRecipientRows() {
+  const ids = scheduleRecipientIds();
+  $("#recipient-count").textContent = `${ids.length}명`;
+  $("#recipient-rows").innerHTML = ids.length ? ids.map(id => `
+    <tr><td><span class="recipient-avatar" aria-hidden="true">${svgIcon("user")}</span><span class="recipient-employee-id">${escapeHtml(id)}</span></td>
+    <td><span class="recipient-kind">${id === state.portal.viewer.employee_id ? "본인" : "추가 대상자"}</span></td>
+    <td><button type="button" class="recipient-remove" data-remove-recipient="${escapeHtml(id)}" aria-label="${escapeHtml(id)} 대상자 삭제">삭제</button></td></tr>`).join("")
+    : '<tr><td colspan="3" class="recipient-empty">실행할 대상자를 추가해 주세요.</td></tr>';
+}
+
+function addScheduleRecipients() {
+  const input = $("#recipient-input");
+  const error = $("#recipient-error");
+  const incoming = input.value.trim().split(/[;,\s]+/).filter(Boolean);
+  const existing = scheduleRecipientIds();
+  const merged = [...new Set([...existing, ...incoming])];
+  const message = !incoming.length ? "추가할 사번을 입력해 주세요."
+    : incoming.some(id => !/^[0-9]{7}$/.test(id)) ? "사번은 7자리 숫자로 입력해 주세요."
+    : merged.length > 100 ? "실행 대상자는 최대 100명까지 추가할 수 있습니다." : "";
+  error.hidden = !message;
+  error.textContent = message;
+  input.setAttribute("aria-invalid", message ? "true" : "false");
+  if (message) { input.focus(); return false; }
+  $("#schedule-form").elements.recipient_ids.value = merged.join(";");
+  if (merged.length === existing.length) showToast("이미 추가된 대상자입니다.");
+  input.value = "";
+  renderRecipientRows();
+  input.focus();
+  return true;
+}
+
 function prepareScheduleDrawer(scheduleId = "") {
   const form = $("#schedule-form");
   const schedule = state.portal.schedules.find((item) => item.id === scheduleId);
   state.editingScheduleId = schedule?.id || null;
   form.reset();
+  form.elements.recipient_ids.value = (schedule?.recipient_ids || [state.portal.viewer.employee_id]).join("; ");
+  $("#recipient-input").value = "";
+  $("#recipient-error").hidden = true;
+  $("#recipient-input").removeAttribute("aria-invalid");
+  renderRecipientRows();
   if (schedule) {
     $("#schedule-drawer-kicker").textContent = "EDIT AUTOMATION";
     $("#schedule-drawer-title").textContent = "스케줄 수정";
@@ -3055,6 +3369,10 @@ function prepareScheduleDrawer(scheduleId = "") {
     form.elements.start_time.value = "09:00";
     form.elements.end_time.value = "18:00";
   }
+  form.elements.email_recipients.value = (schedule?.email_recipients || []).join("; ");
+  syncRepeatPicker();
+  enhanceScheduleTimeInputs();
+  setupIntervalEditor();
   $("#schedule-drawer").setAttribute("aria-label", schedule ? "스케줄 수정" : "새 스케줄 등록");
   syncScheduleTimingFields();
 }
@@ -3062,6 +3380,8 @@ function prepareScheduleDrawer(scheduleId = "") {
 function scheduleRequestPayload(form) {
   const timing = scheduleTimingFromForm(form);
   return {
+    recipient_ids: [...new Set(form.elements.recipient_ids.value.split(/[;,\s]+/).filter(Boolean))],
+    email_recipients: [...new Set(form.elements.email_recipients.value.split(/[;,\s]+/).filter(Boolean))],
     title: String(form.elements.title.value || "").trim(),
     question: String(form.elements.question.value || "").trim(),
     repeat: timing.repeat,
@@ -3213,6 +3533,14 @@ function renderMetadataForm() {
   $("#metadata-drawer-title").textContent = `${type.label} 등록 요청`;
   $("#metadata-drawer").setAttribute("aria-label", `${type.label} 등록 요청`);
   $("#metadata-form-fields").innerHTML = metadataFormMarkup();
+  const duplicateSelect = $("#metadata-form [name='duplicate_action']");
+  // 상위 label의 기본 클릭 동작이 사용자 정의 버튼을 가로채지 않도록 분리합니다.
+  const duplicateLabel = duplicateSelect.closest("label");
+  const duplicateGroup = document.createElement("div");
+  duplicateGroup.className = "portal-select-field";
+  duplicateGroup.append(...duplicateLabel.childNodes);
+  duplicateLabel.replaceWith(duplicateGroup);
+  enhancePortalSelect(duplicateSelect, "중복 처리 방식");
   $("#metadata-form [name='dry_run']")?.addEventListener("change", updateMetadataSubmitLabel);
   updateMetadataSubmitLabel();
 }
@@ -3227,12 +3555,14 @@ function openDrawer(kind, itemId = "") {
   const drawer = $(`#${kind}-drawer`);
   if (!drawer) return;
   $("#drawer-backdrop").hidden = false;
+  document.body.classList.add("portal-drawer-open");
   window.requestAnimationFrame(() => drawer.classList.add("open"));
   drawer.setAttribute("aria-hidden", "false");
   drawer.querySelector("input, textarea, select")?.focus();
 }
 
 function closeDrawers() {
+  document.body.classList.remove("portal-drawer-open");
   $$(".drawer").forEach((drawer) => {
     drawer.classList.remove("open");
     drawer.setAttribute("aria-hidden", "true");
@@ -3575,7 +3905,26 @@ function bindEvents() {
 
   $("#schedule-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if ($("#recipient-input").value.trim() && !addScheduleRecipients()) return;
+    if (!scheduleRecipientIds().length) {
+      $("#recipient-error").textContent = "실행 대상자를 한 명 이상 추가해 주세요.";
+      $("#recipient-error").hidden = false;
+      $("#recipient-input").focus();
+      return;
+    }
     await saveSchedule(event.currentTarget);
+  });
+  $("#active-user-download").addEventListener("click", downloadActiveUsers);
+  $("#recipient-add").addEventListener("click", addScheduleRecipients);
+  $("#recipient-input").addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); addScheduleRecipients(); }
+  });
+  $("#recipient-rows").addEventListener("click", event => {
+    const button = event.target.closest("[data-remove-recipient]");
+    if (!button) return;
+    $("#schedule-form").elements.recipient_ids.value = scheduleRecipientIds().filter(id => id !== button.dataset.removeRecipient).join(";");
+    renderRecipientRows();
+    $("#recipient-input").focus();
   });
 
   $("#metadata-form").addEventListener("submit", async (event) => {

@@ -116,20 +116,23 @@
           <div class="dashboard-grid">
             <article class="panel usage-panel">
               <div class="panel-heading">
-                <div><p class="panel-label">USAGE HISTORY</p><h3>최근 3주 일별 사용자 · 채팅</h3></div>
-                <span class="chart-period-note">21일 추이</span>
+                <div><p class="panel-label">USAGE HISTORY</p><h3>사용자 · 채팅 추이</h3></div>
+                <span class="chart-period-note">MongoDB 보관 이력</span>
               </div>
-              <div class="chart-legend activity-legend"><span><i class="legend-dot user-dot"></i>일별 고유 사용자</span><span><i class="legend-dot chat-dot"></i>채팅 건수</span><strong id="usage-total">집계 대기</strong></div>
-              <div class="usage-chart" id="usage-chart" aria-label="최근 3주 일별 사용자와 채팅 건수 막대 차트"></div>
+              <div class="chart-legend activity-legend"><span><i class="legend-dot user-dot"></i>채팅 · 왼쪽 축</span><span><i class="legend-line"></i>사용자 · 오른쪽 축</span><strong id="usage-total">집계 대기</strong></div>
+              <div id="usage-chart" class="combined-charts"></div>
+              <p class="chart-footnote">한국 시간 기준 · 주차는 ISO 표준(월~일) · 이번 달/주는 오늘까지 집계합니다. 보관되지 않은 이력은 포함되지 않으며, 0은 보관된 기록이 없음을 뜻합니다.</p>
             </article>
 
             <article class="panel active-user-panel">
               <div class="panel-heading">
                 <div><p class="panel-label">ACTIVE USER</p><h3>활성 사용자</h3></div>
-                <button class="text-button" type="button" data-nav="settings">기준 설정 <span>→</span></button>
+                <button type="button" class="usage-export-button" id="active-user-download" title="전체 활성 사용자 명단을 Excel에서 열 수 있는 CSV로 다운로드" aria-label="전체 활성 사용자 CSV 다운로드"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 18v2h14v-2" /></svg><span>CSV 다운로드</span></button>
               </div>
               <div class="active-user-summary" id="active-user-summary"></div>
+              <div class="active-user-list-heading"><span>사용자별 활동</span><button class="text-button" type="button" data-nav="settings">기준 설정 <span>→</span></button></div>
               <ul class="active-user-list" id="active-user-list"></ul>
+              <p class="chart-footnote active-user-footnote">최근 21일 기준 · 일평균은 전체 채팅 건수 ÷ 21일입니다.<br>다운로드에는 전체 명단과 사용 일자가 포함됩니다.</p>
             </article>
           </div>
 
@@ -178,7 +181,7 @@
 
           <div class="schedule-tip">
             <span class="tip-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4" /></svg></span>
-            <p><strong>cron 식을 몰라도 괜찮습니다.</strong> 매일·평일·매주 같은 익숙한 방식으로 등록하면 시스템이 실행 규칙을 만들어 줍니다. 결과는 등록자 개인 DM으로만 발송됩니다.</p>
+            <p><strong>cron 식을 몰라도 괜찮습니다.</strong> 매일·평일·매주 같은 익숙한 방식으로 등록하세요. 실행 대상자마다 Agent를 실행하고 CUBE 개인 DM으로 결과를 전달합니다.</p>
             <button type="button" class="close-tip" aria-label="안내 닫기"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
           </div>
 
@@ -358,24 +361,36 @@
             <span class="schedule-timing-badge">CUBE 자동 실행</span>
           </div>
           <div class="schedule-timing-grid">
-            <label class="schedule-timing-control"><span>반복 방식</span><select name="repeat" aria-describedby="schedule-repeat-help"><option value="평일">평일</option><option value="매일">매일</option><option value="매주">매주</option><option value="매월">매월</option><option value="한 번만">한 번만</option><option value="interval">간격 반복</option></select></label>
+            <div class="schedule-timing-control repeat-picker"><span id="repeat-picker-label">반복 방식</span><select name="repeat" hidden aria-hidden="true" tabindex="-1"><option value="평일">평일</option><option value="매일">매일</option><option value="매주">매주</option><option value="매월">매월</option><option value="한 번만">한 번만</option><option value="interval">간격 반복</option></select><button type="button" id="repeat-picker-button" class="repeat-picker-button" aria-labelledby="repeat-picker-label repeat-picker-value" aria-haspopup="listbox" aria-expanded="false" aria-controls="repeat-picker-list"><span id="repeat-picker-value">평일</span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button><div id="repeat-picker-list" class="repeat-picker-list" role="listbox" aria-labelledby="repeat-picker-label" hidden></div></div>
             <label class="schedule-timing-control" id="schedule-single-time-field"><span>실행 시간</span><input name="time" type="time" value="09:30" required /></label>
           </div>
           <p class="schedule-timing-help" id="schedule-repeat-help">매일처럼 한 번 실행하거나, 지정한 시간 구간 안에서 반복 실행할 수 있습니다.</p>
           <section class="interval-schedule-fields" id="interval-schedule-fields" hidden aria-live="polite" aria-label="간격 반복 실행 설정">
             <div class="interval-schedule-heading"><div><span>간격 반복 설정</span><strong id="interval-mode-label">10분마다 반복 실행</strong></div><span class="interval-mode-badge">실행 구간 필요</span></div>
             <div class="form-row interval-time-row">
-              <label><span>반복 간격</span><select name="interval_minutes"><option value="10">10분마다</option><option value="30">30분마다</option><option value="60">1시간마다</option></select></label>
+              <div class="interval-editor"><span id="interval-editor-label">반복 간격</span><input name="interval_minutes" type="hidden" value="10" /><div class="interval-editor-inputs"><label class="interval-part"><input name="interval_hours" type="number" min="0" max="24" step="1" value="0" aria-label="반복 간격 시간" aria-describedby="interval-unit-help" /><span>시간</span></label><label class="interval-part"><input name="interval_extra_minutes" type="number" min="0" max="60" step="1" value="10" aria-label="반복 간격 분" aria-describedby="interval-unit-help" /><span>분</span></label></div><small id="interval-unit-help">예: 2시간 30분 · 시간 0~24, 분 0~60 입력 가능<br>합계 1분~24시간 범위에서 실행합니다. 60분은 1시간으로 계산됩니다.</small></div>
               <label><span>시작 시간</span><input name="start_time" type="time" value="09:00" /></label>
               <label><span>종료 시간</span><input name="end_time" type="time" value="18:00" /></label>
             </div>
             <p class="interval-schedule-help">시작 시간부터 종료 시간 전까지 선택한 간격으로 실행합니다. 종료 시간은 시작 시간보다 늦어야 합니다.</p>
+            <div class="interval-example"><strong>예시 · 매일 오전 7시부터 8시간마다 실행</strong><p>반복 간격 <b>8시간 0분</b> · 시작 <b>07:00</b> · 종료 <b>23:59</b></p><p>07:00 → 15:00 → 23:00 → 다음 날 07:00 순으로 반복됩니다.</p><small>시작과 종료를 모두 07:00으로 입력하면 등록할 수 없습니다. 스케줄이 활성 상태이고 Worker가 실행 중이어야 실제 실행됩니다.</small></div>
           </section>
         </section>
         <aside class="schedule-delivery-note" aria-label="스케줄 발송 대상 안내">
           <span class="schedule-delivery-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 5 8 7 8-7" /><path d="M4 5h16v14H4z" /></svg></span>
-          <div><span>발송 대상</span><strong>등록자 개인 DM</strong><p>스케줄 실행 결과는 등록한 본인에게만 CUBE 개인 메시지로 전송됩니다.</p></div>
+          <div><span>실행 대상 · CUBE 개인 DM</span><strong>사용자별로 실행하고 결과를 전달합니다</strong><p>입력한 각 사번으로 Agent를 별도 실행합니다. 수정 권한은 등록자와 관리자에게 있습니다.</p></div>
         </aside>
+        <section class="recipient-editor" aria-labelledby="recipient-heading">
+          <div class="recipient-heading"><h3 id="recipient-heading">실행 대상자</h3><span id="recipient-count" aria-live="polite">0명</span></div>
+          <input type="hidden" name="recipient_ids" />
+          <label for="recipient-input">사번으로 대상자 추가</label>
+          <div class="recipient-entry"><input id="recipient-input" type="text" autocomplete="off" placeholder="예: 2069026, 2011111" aria-describedby="recipient-help recipient-error" /><button type="button" class="primary-button" id="recipient-add">추가</button></div>
+          <p id="recipient-help">7자리 사번을 입력하고 <strong>Enter 또는 추가</strong>를 누르세요.<br>여러 명은 쉼표로 구분하세요. 예: <strong>2069026, 2011111</strong><br>세미콜론(;)이나 공백으로 구분해 붙여넣어도 됩니다.</p>
+          <p id="recipient-error" role="alert" hidden></p>
+          <div class="recipient-table-scroll"><table class="recipient-table"><thead><tr><th scope="col">사번</th><th scope="col">대상</th><th scope="col">관리</th></tr></thead><tbody id="recipient-rows"></tbody></table></div>
+          <p class="recipient-footer">최대 100명 · 대상자마다 별도로 실행하고 CUBE DM을 보냅니다.</p>
+        </section>
+        <section class="recipient-editor"><div class="recipient-heading"><h3>메일 수신자</h3><span>발송 연동 준비 중</span></div><label><span>메일 주소 (선택)</span><textarea name="email_recipients" rows="2" placeholder="aaa@sk.com; bbb@sk.com"></textarea></label><p class="recipient-footer">발신: ptmore_pkg@sk.com · 여러 주소는 세미콜론(;)으로 구분합니다. 현재는 수신 정보만 저장하며 실제 메일은 발송하지 않습니다.</p></section>
         <div class="schedule-preview"><span>다음 실행</span><strong id="next-preview">다음 평일 오전 09:30</strong></div>
         <div class="drawer-actions"><button type="button" class="secondary-button" data-close-drawer>취소</button><button type="submit" class="primary-button" id="schedule-submit">스케줄 등록</button></div>
       </form>

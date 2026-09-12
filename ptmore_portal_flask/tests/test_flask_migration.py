@@ -39,6 +39,46 @@ portal_core = flask_portal.portal_core
 application = flask_portal.app
 
 
+def test_domain_detail_exposes_sanitized_authoring_text():
+    detail = portal_core._live_metadata_detail_item("domain", {
+        "section": "process_groups", "key": "DA", "status": "active",
+        "raw_text": "DA 등록 api_key=private-value",
+        "payload": {"selection_criteria": "DA 공정 질문", "display_name": "DA"},
+    })
+    assert "DA 등록" in detail["raw_text"]
+    assert "private-value" not in detail["raw_text"]
+    assert detail["selection_criteria"] == "DA 공정 질문"
+
+
+def test_mail_adapter_is_explicitly_disconnected():
+    from schedule_mail import parse_recipients, build_schedule_email, send_schedule_email
+    assert parse_recipients("aaa@sk.com; bbb@sk.com; aaa@sk.com") == ["aaa@sk.com", "bbb@sk.com"]
+    with pytest.raises(ValueError):
+        parse_recipients(["bad-address"])
+    message = build_schedule_email(["aaa@sk.com"], "질문", "답변")
+    assert message["From"] == "ptmore_pkg@sk.com"
+    assert "답변" in message.get_content()
+    with pytest.raises(RuntimeError, match="연결되지"):
+        send_schedule_email(["aaa@sk.com"], "질문", "답변")
+
+
+def test_schedule_email_and_custom_interval_roundtrip(client, monkeypatch):
+    store = FakeScheduleStore()
+    monkeypatch.setattr(portal_core, "_portal_schedule_store_factory", lambda: store)
+    response = client.post("/api/schedules", json={
+        "title": "8시간 실행", "question": "분석", "repeat": "interval",
+        "interval_minutes": 480, "start_time": "07:30", "end_time": "23:59",
+        "email_recipients": ["aaa@sk.com", "bbb@sk.com"],
+    })
+    assert response.status_code == 201
+    schedule = response.get_json()["schedule"]
+    assert schedule["interval_minutes"] == 480
+    assert schedule["email_recipients"] == ["aaa@sk.com", "bbb@sk.com"]
+    edited = client.patch(f"/api/schedules/{schedule['id']}", json={"email_recipients": []})
+    assert edited.status_code == 200
+    assert edited.get_json()["schedule"]["email_recipients"] == []
+
+
 def _load_flask_index_module():
     """Import the HCP WebApp entry module without executing its server block."""
 
@@ -568,7 +608,7 @@ def test_flask_auth_mode_defaults_to_sso_without_private_or_process_setting(
     runtime_settings = _load_runtime_settings_module()
     monkeypatch.delenv("PTMORE_PORTAL_FLASK_AUTH_MODE", raising=False)
     monkeypatch.delenv("PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON", raising=False)
-    monkeypatch.delitem(sys.modules, "portal_runtime_config", raising=False)
+    monkeypatch.setitem(sys.modules, "portal_runtime_config", ModuleType("portal_runtime_config"))
     runtime_settings.reset_runtime_settings_cache()
 
     assert flask_portal._auth_mode() == "sso"
@@ -653,3 +693,201 @@ def test_schedule_post_and_get_use_flask_session_owner_without_mongodb(
     assert listed_response.status_code == 200
     assert listed_response.get_json()["schedules"] == [created]
     assert store.closed == 2
+
+
+def test_group_schedule_membership_and_authorization(client, monkeypatch):
+    store = FakeScheduleStore()
+    monkeypatch.setattr(portal_core, "_portal_schedule_store_factory", lambda: store)
+    response = client.post("/api/schedules", json={
+        "title": "그룹 실행", "question": "현황 조회", "repeat": "매일", "time": "09:30",
+        "recipient_ids": ["2011111", "2022222", "2011111"],
+    })
+    assert response.status_code == 201
+    group = response.get_json()["schedule"]
+    group_id = group["id"]
+    assert len(store.documents) == 2
+    assert group["owner_id"] == "2069026"
+    assert {d["owner_id"] for d in store.documents.values()} == {"2011111", "2022222"}
+    assert all(d["registrant_id"] == "2069026" and d["group_id"] == group_id for d in store.documents.values())
+    assert len(client.get("/api/schedules").get_json()["schedules"]) == 1
+    monkeypatch.setattr(flask_portal, "_auth_mode", lambda: "sso")
+    with client.session_transaction() as session:
+        session.update(emp_no="2011111", emp_name="수신자", logFlag=True)
+    assert client.patch(f"/api/schedules/{group_id}/status", json={"status": "inactive"}).status_code == 403
+    with client.session_transaction() as session:
+        session.update(emp_no="2069026", emp_name="문봉건", logFlag=True)
+    assert client.patch(f"/api/schedules/{group_id}/status", json={"status": "inactive"}).status_code == 200
+    assert all(d["status"] == "inactive" for d in store.documents.values())
+    changed = client.patch(f"/api/schedules/{group_id}", json={"recipient_ids": ["2033333", "2022222"]})
+    assert changed.status_code == 200
+    assert changed.get_json()["schedule"]["id"] == group_id
+    assert {d["owner_id"] for d in store.documents.values()} == {"2033333", "2022222"}
+    assert all(d["status"] == "inactive" for d in store.documents.values())
+    assert client.delete(f"/api/schedules/{group_id}").status_code == 200
+    assert not store.documents
+
+
+def test_group_rejects_invalid_recipients(client):
+    for recipients in ([], ["not-an-employee"], ["123"], ["2011111"] * 101):
+        response = client.post("/api/schedules", json={
+            "title": "invalid", "question": "test", "repeat": "매일", "time": "09:00",
+            "recipient_ids": recipients,
+        })
+        assert response.status_code == 422
+
+
+def test_group_creation_failure_pauses_partial_documents():
+    from schedule_groups import GroupScheduleStore
+    store = FakeScheduleStore()
+    create = store.create_schedule
+    def fail_second(document):
+        if store.documents:
+            raise portal_core.PortalScheduleStoreError("simulated outage")
+        return create(document)
+    store.create_schedule = fail_second
+    with pytest.raises(portal_core.PortalScheduleStoreError):
+        GroupScheduleStore(store).create_schedule({
+            "_id": "SCH-test", "owner_id": "2069026", "status": "active",
+            "next_run_at": "2030-01-01T00:00:00+00:00", "recipient_ids": ["2011111", "2022222"],
+        })
+    assert all(d["status"] == "inactive" for d in store.documents.values())
+
+
+def test_ten_recipients_create_ten_worker_documents(client, monkeypatch):
+    store = FakeScheduleStore()
+    monkeypatch.setattr(portal_core, "_portal_schedule_store_factory", lambda: store)
+    recipients = [str(2100000 + index) for index in range(10)]
+    result = client.post("/api/schedules", json={
+        "title": "10명 실행", "question": "생산 현황", "repeat": "매일", "time": "07:30",
+        "recipient_ids": recipients,
+    })
+    assert result.status_code == 201
+    assert len(store.documents) == 10
+    assert {d["owner_id"] for d in store.documents.values()} == set(recipients)
+    for document in store.documents.values():
+        assert portal_core._schedule_id(document["_id"])
+        assert document["status"] == "active" and document["next_run_at"]
+        assert document["question"] == "생산 현황"
+
+
+def test_legacy_schedule_can_gain_recipients(client, monkeypatch):
+    store = FakeScheduleStore()
+    monkeypatch.setattr(portal_core, "_portal_schedule_store_factory", lambda: store)
+    identifier = portal_core._new_schedule_id()
+    store.documents[identifier] = {
+        "_id": identifier, "owner_id": "2069026", "owner_name": "문봉건",
+        "title": "기존", "question": "조회", "repeat": "매일", "time": "09:00", "status": "active",
+    }
+    response = client.patch(f"/api/schedules/{identifier}", json={"recipient_ids": ["2069026", "2011111"]})
+    assert response.status_code == 200
+    assert len(store.documents) == 2
+    assert all(d["group_id"] == identifier for d in store.documents.values())
+
+
+@pytest.fixture
+def archive_snapshot(monkeypatch):
+    from types import SimpleNamespace
+    from datetime import datetime
+    today = datetime.now(portal_core._KST).date().isoformat()
+    records = [{"query_time": today + "T09:00:00+09:00", "project": "test-project",
+                "user_id": "2011111", "platform": "CUBE_SCHEDULING", "question": "보관된 질문"}]
+    class Archive:
+        def read_records(self, **kwargs): return copy.deepcopy(records)
+        def covered_scopes(self, **kwargs): return set()
+        def refresh(self, *args, **kwargs): raise AssertionError("Failure must never write or delete archive data")
+        def close(self): pass
+    monkeypatch.setattr(portal_core, "_usage_history_archive_mode_from_env", lambda: "configured")
+    monkeypatch.setattr(portal_core, "_usage_history_archive_config_from_env", lambda: SimpleNamespace(collection="portal_usage_history"))
+    monkeypatch.setattr(portal_core, "_usage_history_archive_configuration_errors", lambda config: [])
+    monkeypatch.setattr(portal_core, "_get_usage_history_archive", Archive)
+    return records
+
+
+@pytest.mark.parametrize("failure", ["missing_key", "invalid_configuration", "network"])
+def test_archive_display_survives_phoenix_failure(client, monkeypatch, archive_snapshot, failure):
+    from types import SimpleNamespace
+    if failure == "invalid_configuration":
+        def invalid(): raise portal_core.PhoenixUsageUnavailableError("bad configuration")
+        monkeypatch.setattr(portal_core, "_phoenix_usage_config_from_env", invalid)
+    else:
+        monkeypatch.setattr(portal_core, "_phoenix_usage_config_from_env", lambda: SimpleNamespace(
+            is_configured=failure != "missing_key", projects=("test-project",), configuration_errors=()))
+    def offline(*args, **kwargs): raise portal_core.PhoenixUsageUnavailableError("offline")
+    monkeypatch.setattr(portal_core, "_fetch_phoenix_usage_range", offline)
+    response = client.get("/api/dashboard/usage")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["source"]["status"] == "cached"
+    assert payload["source"]["warning_code"].startswith("phoenix_usage_")
+    assert payload["usage_history"][0]["question"] == "보관된 질문"
+    assert sum(day["chat_count"] for day in payload["dashboard"]["usage_by_day"]) == 1
+
+
+def test_cached_request_never_contacts_phoenix(client, monkeypatch, archive_snapshot):
+    def forbidden(): raise AssertionError("Cache-only request must not require Phoenix")
+    monkeypatch.setattr(portal_core, "_phoenix_usage_config_from_env", forbidden)
+    response = client.get("/api/dashboard/usage?cache_only=true")
+    assert response.status_code == 200
+    assert len(response.get_json()["usage_history"]) == 1
+
+
+def test_successful_refresh_replaces_cached_response(monkeypatch, archive_snapshot):
+    result = {"source": {"status": "connected"}, "usage_history": [], "raw_records": []}
+    monkeypatch.setattr(portal_core, "_synchronize_recent_usage_snapshot", lambda **kwargs: result)
+    assert portal_core._load_recent_usage_snapshot() is result
+
+
+def test_empty_archive_reports_empty_not_phoenix_success(monkeypatch, archive_snapshot):
+    archive_snapshot.clear()
+    result = portal_core._load_recent_usage_snapshot(cache_only=True)
+    assert result["usage_history"] == []
+    assert "저장된 사용 이력이 없습니다" in result["source"]["detail"]
+
+
+def test_full_refresh_failure_is_not_reported_as_success(monkeypatch, archive_snapshot):
+    def offline(**kwargs):
+        raise portal_core.HTTPException(status_code=503, detail={"code": "phoenix_usage_unavailable"})
+    monkeypatch.setattr(portal_core, "_synchronize_recent_usage_snapshot", offline)
+    result = portal_core._load_recent_usage_snapshot(full_refresh=True)
+    assert result["source"]["archive"]["full_refresh"] is False
+    assert result["source"]["archive"]["updated_day_count"] == 0
+
+
+def test_mongodb_outage_is_still_an_error(monkeypatch, archive_snapshot):
+    def unavailable(): raise RuntimeError("offline")
+    monkeypatch.setattr(portal_core, "_get_usage_history_archive", unavailable)
+    with pytest.raises(portal_core.HTTPException) as failure:
+        portal_core._load_recent_usage_snapshot(cache_only=True)
+    assert failure.value.detail["code"] == "usage_history_archive_unavailable"
+
+
+def test_calendar_charts_deduplicate_users_and_iso_year():
+    from datetime import date
+    from usage_charts import build_charts
+    rows = [
+        {"project": "a", "trace_id": "one", "query_time": "2026-12-31T16:00:00Z", "user_id": "1"},
+        {"project": "a", "trace_id": "two", "query_time": "2027-01-01T12:00:00+09:00", "user_id": "1"},
+        {"project": "a", "trace_id": "old", "query_time": "2026-11-01T12:00:00+09:00", "user_id": "2"},
+    ]
+    charts = build_charts(rows + [rows[0]], date(2027, 1, 1))
+    assert [len(charts[key]) for key in ("monthly", "weekly", "daily")] == [3, 4, 14]
+    assert charts["weekly"][-1]["label"] == "2026-W53"
+    assert charts["daily"][-1]["chat_count"] == 2
+    assert charts["daily"][-1]["unique_users"] == 1
+    assert charts["monthly"][0]["chat_count"] == 1
+    assert charts["monthly"][1]["chat_count"] == 0
+
+
+def test_active_users_include_all_and_average():
+    from datetime import date
+    history = [{"employee_id": str(user), "user_name": f"사용자{user}", "date": f"2026-09-{day:02}",
+                "question": "test", "channel": "CUBE", "occurred_at": f"2026-09-{day:02}T09:00:00+09:00"}
+               for user in range(8) for day in (1, 2, 3) for _ in range(4)]
+    policy = portal_core._normalise_portal_settings({})["usage_policy"]
+    dashboard = portal_core._build_usage_dashboard(history, policy, start_day=date(2026, 9, 1), end_day=date(2026, 9, 21))
+    assert len(dashboard["active_users"]) == 8
+    user = dashboard["active_users"][0]
+    assert user["distinct_days"] == 3 and user["chat_count"] == 12
+    assert user["daily_average"] == round(12 / 21, 2)
+    assert user["usage_day_average"] == 4
+    assert len(user["usage_dates"]) == 3
