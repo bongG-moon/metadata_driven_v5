@@ -71,14 +71,14 @@
               <div class="info-box">
                 <img
                   class="img-xs rounded-circle profile-image"
-                  src="http://skynet.skhynix.com/portalWeb/uploadfile/pictures/2069026.jpg"
+                  src="http://skynet.skhynix.com/portalWeb/uploadfile/pictures/{{ session.get('emp_no', '0000000') }}.jpg"
                   width="31.80px"
                   height="34.30px"
-                  alt="문봉건 프로필 사진"
+                  alt="사용자 프로필 사진"
                   id="my_face"
                 />
               </div>
-              <span><strong id="viewer-name">문봉건</strong><small id="viewer-role">관리자 · 2069026</small></span>
+              <span><strong id="viewer-name">{{ session.get('emp_name', '') }}</strong><small id="viewer-role">권한 확인 중 · {{ session.get('emp_no', '0000000') }}</small></span>
               <span class="chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5" /></svg></span>
             </div>
           </div>

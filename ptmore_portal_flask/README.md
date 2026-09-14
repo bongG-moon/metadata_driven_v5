@@ -2,11 +2,13 @@
 
 기존 `ptmore_portal`의 화면, MongoDB 저장, Phoenix 사용 이력, 메타데이터 API, 스케줄 API를 유지하면서 HTTP 서버와 로그인 세션만 Flask로 바꾼 폴더입니다.
 
-로컬 화면 확인용 mock 로그인은 명시적으로 선택해야 합니다.
+`PTMORE_PORTAL_FLASK_AUTH_MODE="mock"`은 이제 고정 사용자가 아닌 브라우저 `LASTUSER` 쿠키의 7자리 사번을 사용합니다. 이름은 MongoDB가 아닌 H-API 응답에서 가져옵니다. `sso` 모드는 기존 SSO 세션을 그대로 사용합니다.
 
-- 사번: `2069026`
-- 이름: `문봉건`
-- 프로필 사진: `http://skynet.skhynix.com/portalWeb/uploadfile/pictures/2069026.jpg`
+비공개 `portal_runtime_config.py` 또는 HCP Secret에 `PTMORE_EMPLOYEE_HAPI_URL`, `PTMORE_EMPLOYEE_HAPI_TOKEN`, `PTMORE_EMPLOYEE_HAPI_NAME_FIELD`를 추가하세요. Worker와 같은 설정 이름을 사용하지만 별도 배포이므로 Portal에도 입력해야 합니다. 이름 컬럼 기본값은 `EMP_NM`, 사번 컬럼은 `EMPNO`입니다. 조회는 `{"bindParams":["사번"]}` 형식이며 메일 주소는 Portal 세션에 저장하지 않습니다.
+
+쿠키가 없거나 형식이 잘못되면 `0000000 / 아무개`로 표시하고 변경 작업은 차단합니다. 정상 사번의 이름 조회가 실패하면 이름은 빈 값입니다. 성공한 이름은 5분, 빈 이름은 30초간 세션에 캐시하며 스케줄 등록·수정 시 다시 조회합니다. 쿠키가 변경되거나 사라지면 이전 사용자 세션을 재사용하지 않습니다. 사진 URL도 현재 사번으로 변경합니다.
+
+**보안 주의:** LASTUSER는 서명 검증 없는 사용자 변경 가능 쿠키입니다. H-API 이름 조회는 인증이 아니며 다른 사번의 사용을 막지 못합니다. mock은 신뢰된 테스트 환경에서만 사용하고 운영 인증에는 SSO를 사용하세요. mock이라는 이유로 기본 관리자 권한을 자동 부여하지 않으며 명시적인 설정 및 MongoDB 관리자 명단만 사용합니다. 사내 쿠키가 Portal 호스트의 Domain/Path 범위에 있어야 브라우저가 전달합니다. localhost에는 사내 쿠키가 자동 전달되지 않습니다.
 
 ## 로컬 실행
 

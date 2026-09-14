@@ -7,8 +7,8 @@ Only Flask handles HTTP routes, sessions, and the current user identity.
 ``index.py`` imports this module's ``app`` object to start the WebApp.
 
 For a local check, explicitly set ``PTMORE_PORTAL_FLASK_AUTH_MODE`` to
-``mock`` to receive the fixed Flask session identity requested by the
-operator: ``2069026 / 문봉건``.  The safe default is ``sso``.
+``mock`` to use the LASTUSER cookie and H-API display name. This cookie is
+not an authentication proof. The safe default is ``sso``.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import asyncio
 import inspect
 import os
 import re
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Mapping, TypeVar
@@ -72,9 +73,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 url_path = ""
 
 
-_EMPLOYEE_ID_PATTERN = re.compile(r"^\d{7}$")
-_MOCK_EMPLOYEE_ID = "2069026"
-_MOCK_EMPLOYEE_NAME = "문봉건"
+_EMPLOYEE_ID_PATTERN = re.compile(r"^[0-9]{7}$")
 _PROFILE_IMAGE_TEMPLATE = "http://skynet.skhynix.com/portalWeb/uploadfile/pictures/{employee_id}.jpg"
 _MODEL = TypeVar("_MODEL", bound=BaseModel)
 
@@ -85,22 +84,56 @@ def _auth_mode() -> str:
     return get_setting("PTMORE_PORTAL_FLASK_AUTH_MODE", "sso").lower() or "sso"
 
 
-# The first local run should expose the same administrator-only screens as the
-# original Portal preview.  This default exists only in process memory while
-# explicit Flask mock login is selected.  It never writes to ``os.environ``;
-# a configured Python/Secret administrator list always takes precedence.
-if _auth_mode() == "mock" and not get_setting("PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON"):
-    portal_core.set_default_portal_administrators_override(
-        [{"employee_id": _MOCK_EMPLOYEE_ID, "name": _MOCK_EMPLOYEE_NAME}]
-    )
+def _hapi_employee_name(employee_id: str) -> str:
+    """Display-name enrichment only, never authentication or role assignment."""
+    endpoint = get_setting("PTMORE_EMPLOYEE_HAPI_URL")
+    token = get_setting("PTMORE_EMPLOYEE_HAPI_TOKEN")
+    if not endpoint or not token:
+        return ""
+    try:
+        response = requests.post(
+            endpoint,
+            headers={"h-api-token": token, "Content-Type": "application/json"},
+            json={"bindParams": [employee_id]}, timeout=5, allow_redirects=False,
+        )
+        if response.status_code != 200:
+            return ""
+        rows = response.json()
+        if not isinstance(rows, list):
+            return ""
+        field = get_setting("PTMORE_EMPLOYEE_HAPI_NAME_FIELD", "EMP_NM")
+        names = {
+            str(row.get(field) or "").strip()
+            for row in rows if isinstance(row, dict)
+            and str(row.get("EMPNO") or "").strip() == employee_id
+            and isinstance(row.get(field), str)
+        }
+        return next(iter(names)) if len(names) == 1 else ""
+    except (requests.RequestException, ValueError, TypeError):
+        # Do not log response bodies, employee information, or H-API credentials.
+        return ""
 
 
 def _mock_session_identity() -> None:
-    """Populate exactly the temporary Flask session identity requested by the user."""
-
-    session["emp_no"] = _MOCK_EMPLOYEE_ID
-    session["emp_name"] = _MOCK_EMPLOYEE_NAME
-    session["logFlag"] = True
+    """Recheck cookie on every request; never reuse another person's session."""
+    values = request.cookies.getlist("LASTUSER")
+    employee_id = str(values[0] or "").strip() if len(values) == 1 else ""
+    valid = bool(_EMPLOYEE_ID_PATTERN.fullmatch(employee_id)) and employee_id != "0000000"
+    employee_id = employee_id if valid else "0000000"
+    if session.get("identity_source") != "lastuser_cookie" or session.get("emp_no") != employee_id:
+        session.clear()
+        session.update(emp_no=employee_id, emp_name="" if valid else "아무개", identity_source="lastuser_cookie")
+    session["logFlag"] = valid
+    # Static files/health probes must not trigger directory traffic. Cache names
+    # briefly per signed browser session; schedule writes always refresh them.
+    if not valid or request.endpoint in {"static", "health", "chrome_devtools_probe"}:
+        return
+    now = time.time()
+    refresh = request.path.startswith("/api/schedules") and request.method in {"POST", "PATCH"}
+    if refresh or now >= float(session.get("name_refresh_at") or 0):
+        name = _hapi_employee_name(employee_id)
+        session["emp_name"] = name
+        session["name_refresh_at"] = now + (300 if name else 30)
 
 
 def _current_flask_identity() -> portal_core.PortalIdentity | None:
@@ -112,8 +145,9 @@ def _current_flask_identity() -> portal_core.PortalIdentity | None:
         return None
     return portal_core.PortalIdentity(
         employee_id=employee_id,
-        name=employee_name or employee_id,
-        source="flask_session",
+        name=employee_name if _auth_mode() == "mock" else employee_name or employee_id,
+        source="lastuser_cookie" if _auth_mode() == "mock" else "flask_session",
+        is_placeholder=_auth_mode() == "mock" and employee_id == "0000000",
     )
 
 
@@ -122,8 +156,8 @@ def _core_identity_from_flask_session(_: Any) -> portal_core.PortalIdentity | No
 
 
 # The Flask session is the only identity boundary in this application.  The
-# copied Portal core is deliberately told to use it rather than LASTUSER,
-# MongoDB employee-name lookup, request headers, or its legacy ASGI session.
+# copied Portal core uses the identity established above rather than performing
+# a second cookie/MongoDB lookup or using its legacy ASGI session.
 portal_core._request_portal_identity = _core_identity_from_flask_session
 # ``sso`` is the existing core's non-directory identity branch.  The Flask
 # session above remains the actual source; this setting only prevents schedule
@@ -222,7 +256,7 @@ def _portal_payload() -> dict[str, Any]:
 
 @app.before_request
 def establish_mock_session() -> None:
-    """Keep the requested local test identity stable on every browser request."""
+    """Resolve the explicit cookie-based mock mode before Portal routes run."""
 
     if _auth_mode() == "mock":
         _mock_session_identity()

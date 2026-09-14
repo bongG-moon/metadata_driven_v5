@@ -36,7 +36,8 @@ def test_complete_report_keeps_data_and_formats_markdown():
     assert "###" not in result and "`20260914`" not in result
     assert "25.6%" in result and "교체필요 14건" in result
     assert "2026-09-14T04:20:46.365079+00:00" in result
-    assert "관련 링크" in result and "[if mso]" in result
+    assert "관련 링크" not in result and "[if mso]" in result
+    assert sum(tag == "a" for tag, attrs in tags) == 2
     assert all(attrs["href"].startswith("http") for tag, attrs in tags if tag == "a")
     assert "a=1&amp;b=2" in result
 
@@ -70,3 +71,34 @@ def test_mime_plain_original_and_html_report_share_same_answer():
     assert rich.get_content_type() == "text/html"
     assert "<th" in rich.get_payload(decode=True).decode("utf-8")
     assert envelope == ["a@example.test", "b@example.test"]
+
+
+def test_flow_html_links_render_once_without_outlook_icons():
+    answer = '''분석 처리 과정
+• 🧭 <a href="http://reports.example.test/view/123?a=1&amp;b=2" target="_blank" rel="noopener noreferrer"><strong>분석 과정 보기</strong></a> · 📥 <a href="http://reports.example.test/download/123" target="_blank"><strong>HTML 다운로드</strong></a>'''
+    result = render_mail("질문", answer)
+    anchors = [attrs for tag, attrs in Tags(result).tags if tag == "a"]
+    assert [item["href"] for item in anchors] == ["http://reports.example.test/view/123?a=1&b=2", "http://reports.example.test/download/123"]
+    assert result.count("분석 과정 보기") == 1
+    assert result.count("HTML 다운로드") == 1
+    assert "관련 링크" not in result and "&lt;a " not in result
+    assert "🧭" not in result and "📥" not in result
+    assert "분석 처리 과정" in result
+
+
+def test_html_links_are_rebuilt_not_trusted_and_code_stays_literal():
+    source = '''<a href="jav&#x61;script:alert(1)" onclick="bad()"><strong>위험</strong></a>
+<a href="https://safe.example.test" style="color:red" onclick="bad()"><img src=x onerror=bad()>정상</a>
+<a href="https://safe.example.test" href="javascript:bad">중복 속성</a>
+`<a href="https://code.example.test">코드</a>`
+```html
+<a href="https://fenced.example.test">예시</a>
+```
+🕒 [분석 보기](https://markdown.example.test)'''
+    result = render_mail("질문", source)
+    anchors = [attrs for tag, attrs in Tags(result).tags if tag == "a"]
+    assert [item["href"] for item in anchors] == ["https://safe.example.test", "https://markdown.example.test"]
+    assert all("onclick" not in item for item in anchors)
+    assert not any(tag == "img" for tag, attrs in Tags(result).tags)
+    assert "🕒" not in result
+    assert "&lt;a" in result

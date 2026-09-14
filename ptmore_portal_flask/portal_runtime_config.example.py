@@ -7,8 +7,15 @@
 입력해도 됩니다. 앱이 기존 설정 형식의 JSON 문자열로 자동 변환합니다.
 """
 
-# 로그인 방식입니다. 운영은 "sso", 임시 화면 확인만 "mock"을 사용합니다.
+# 로그인 방식입니다. "sso"는 SSO 세션, "mock"은 LASTUSER 쿠키 사번 + H-API 이름을 사용합니다.
 PTMORE_PORTAL_FLASK_AUTH_MODE = "mock"
+
+# mock 사용자 이름을 조회하는 사내 H-API 주소입니다.
+PTMORE_EMPLOYEE_HAPI_URL = "http://dp.skhynix.com:8080/datahub/v1/api/pnt-hapi-edu-sample/edu-sample"
+# H-API 인증 토큰입니다. 실제 값은 운영 Secret 또는 비공개 설정 파일에만 입력합니다.
+PTMORE_EMPLOYEE_HAPI_TOKEN = ""
+# H-API 응답의 이름 컬럼입니다. 사번 컬럼은 EMPNO이며 실제 응답에 맞춰 이름 컬럼을 설정합니다.
+PTMORE_EMPLOYEE_HAPI_NAME_FIELD = "EMP_NM"
 
 # 초기 관리자 목록입니다. MongoDB에 관리자가 없을 때만 기본 권한을 부여합니다.
 PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON = [

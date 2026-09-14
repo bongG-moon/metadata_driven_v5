@@ -1,20 +1,45 @@
 """Small, allowlisted Markdown renderer for Outlook HTML mail; no remote assets.
 
 Supports headings, paragraphs, lists, fenced code, pipe tables and HTTP(S)
-links. Raw HTML is displayed as text, never executed. Source is not summarized
+links, including safe links supplied as HTML anchors. Other HTML is escaped.
+Source is not summarized
 or truncated, and the MIME plain-text alternative retains the original answer.
 """
 from __future__ import annotations
 
 import html
 import re
+from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
 
 FONT = "font-family:'Malgun Gothic','맑은 고딕',Arial,sans-serif;"
 TEXT = FONT + "font-size:14px;line-height:1.75;color:#334155;word-wrap:break-word;"
 LINK = re.compile(r"\[([^\]\n]+)\]\((<?(?:[^\s()<>]|\([^\s()]*\))+>?)\)")
-TOKEN = re.compile(r"`([^`\n]+)`|\*\*([^*\n]+)\*\*|" + LINK.pattern)
+HTML_ANCHOR = r'''((?i:<a\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?</a\s*>))'''
+TOKEN = re.compile(r"`([^`\n]+)`|\*\*([^*\n]+)\*\*|" + LINK.pattern + "|" + HTML_ANCHOR)
+LINK_ICONS = r"[\U0001f9ed\U0001f4e5\U0001f552-\U0001f567\u23f0-\u23f3\u231a\u231b]\ufe0f?"
+
+
+class AnchorText(HTMLParser):
+    """Extract href and visible label only; never forward source attributes."""
+
+    def __init__(self, source: str):
+        super().__init__(convert_charrefs=True)
+        self.hrefs = []
+        self.label = []
+        self.feed(source)
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self.hrefs.extend(value or "" for key, value in attrs if key == "href")
+
+    def handle_data(self, data):
+        self.label.append(data)
+
+    def link(self):
+        return "".join(self.label), self.hrefs[0] if len(self.hrefs) == 1 else ""
 
 
 def safe_url(value: str) -> str | None:
@@ -31,13 +56,19 @@ def safe_url(value: str) -> str | None:
 def inline(source: str, links: dict[str, str]) -> str:
     output, position = [], 0
     for match in TOKEN.finditer(source):
-        output.append(html.escape(source[position:match.start()]))
-        code, bold, label, href = match.groups()
+        code, bold, label, href, anchor = match.groups()
+        prefix = source[position:match.start()]
+        if anchor is not None or label is not None:
+            prefix = re.sub(r"(?:" + LINK_ICONS + r"\s*)+$", "", prefix)
+        output.append(html.escape(prefix))
+        if anchor is not None:
+            label, href = AnchorText(anchor).link()
         if code is not None:
             output.append(f'<span style="background-color:#eef2f7;color:#475569;{FONT}">{html.escape(code)}</span>')
         elif bold is not None:
             output.append(f'<strong>{html.escape(bold)}</strong>')
         else:
+            label = re.sub(LINK_ICONS, "", label).strip()
             url = safe_url(href)
             if url:
                 links.setdefault(url, label)
@@ -107,11 +138,7 @@ def render_answer(answer: str) -> tuple[str, dict[str, str]]:
 
 
 def render_mail(question: str, answer: str) -> str:
-    content, links = render_answer(str(answer or ""))
-    actions = ""
-    if links:
-        buttons = "".join(f'<tr><td style="padding:0 0 10px;"><table role="presentation" cellpadding="0" cellspacing="0"><tr><td bgcolor="#edf0fa" style="padding:12px 18px;border:1px solid #d5ddef;"><a href="{html.escape(url, quote=True)}" style="{FONT}font-size:14px;font-weight:bold;color:#40549a;text-decoration:none;">{html.escape(label)} &#8594;</a></td></tr></table></td></tr>' for url, label in links.items())
-        actions = f'<h2 style="{FONT}font-size:15px;color:#263454;margin:24px 0 12px;">관련 링크</h2><table role="presentation" cellpadding="0" cellspacing="0">{buttons}</table>'
+    content, _ = render_answer(str(answer or ""))
     question_html = html.escape(str(question or "")).replace("\n", "<br>")
     return f'''<!DOCTYPE html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="margin:0;padding:0;background-color:#f2f4f8;">
@@ -120,7 +147,7 @@ def render_mail(question: str, answer: str) -> str:
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#ffffff" style="max-width:760px;border:1px solid #e0e5ee;">
 <tr><td bgcolor="#263454" style="padding:26px 28px;{FONT}"><p style="margin:0 0 8px;font-size:12px;letter-spacing:1px;color:#c9d2f1;">PTMORE PKG AGENT</p><h1 style="margin:0;font-size:24px;line-height:1.4;color:#ffffff;">스케줄링 실행 결과</h1></td></tr>
 <tr><td style="padding:24px 28px 8px;"><table role="presentation" width="100%" cellpadding="16" cellspacing="0" bgcolor="#f0f3fa"><tr><td style="{TEXT}border-left:3px solid #7c89ba;"><strong style="font-size:12px;color:#617198;">실행 질문</strong><br>{question_html}</td></tr></table></td></tr>
-<tr><td style="padding:4px 28px 24px;{TEXT}">{content}{actions}</td></tr>
+<tr><td style="padding:4px 28px 24px;{TEXT}">{content}</td></tr>
 <tr><td bgcolor="#f8f9fc" style="padding:16px 28px;border-top:1px solid #e0e5ee;{FONT}font-size:12px;line-height:1.7;color:#778397;">등록된 스케줄에 따라 자동으로 발송된 분석 결과입니다.<br>보고서 링크는 만료 시간이 지나면 열리지 않을 수 있습니다.</td></tr></table>
 <!--[if mso]></td></tr></table><![endif]-->
 </td></tr></table></body></html>'''

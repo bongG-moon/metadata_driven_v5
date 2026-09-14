@@ -253,9 +253,14 @@ def isolated_flask_portal_runtime(monkeypatch):
     ):
         monkeypatch.delenv(name, raising=False)
 
-    # This is the Flask-local identity requested for the first deployment
-    # check. It is intentionally established server-side in session, rather
-    # than taken from any browser request header or cookie.
+    # Offline H-API fixture; no real directory request is allowed in tests.
+    monkeypatch.setenv("PTMORE_EMPLOYEE_HAPI_URL", "https://directory.example.test")
+    monkeypatch.setenv("PTMORE_EMPLOYEE_HAPI_TOKEN", "test-only")
+    monkeypatch.setenv("PTMORE_EMPLOYEE_HAPI_NAME_FIELD", "EMP_NM")
+    def employee_response(url, **kwargs):
+        employee_id = kwargs["json"]["bindParams"][0]
+        return type("Response", (), {"status_code": 200, "json": lambda self: [{"EMPNO": employee_id, "EMP_NM": "문봉건" if employee_id == "2069026" else "사용자"}]})()
+    monkeypatch.setattr(flask_portal.requests, "post", employee_response)
     monkeypatch.setenv("PTMORE_PORTAL_FLASK_AUTH_MODE", "mock")
     monkeypatch.setenv(
         "PTMORE_PORTAL_BOOTSTRAP_ADMINS_JSON",
@@ -276,6 +281,7 @@ def isolated_flask_portal_runtime(monkeypatch):
 def client():
     application.config.update(TESTING=True)
     with application.test_client() as test_client:
+        test_client.set_cookie("LASTUSER", "2069026")
         yield test_client
 
 
@@ -682,6 +688,67 @@ def test_mock_flask_session_is_created_with_requested_employee_identity(client) 
         assert current_session["emp_no"] == "2069026"
         assert current_session["emp_name"] == "문봉건"
         assert current_session["logFlag"] is True
+
+
+@pytest.mark.parametrize("cookie", [None, "wrong", "0000000", "１２３４５６７"])
+def test_mock_missing_cookie_clears_identity_and_blocks_writes(client, cookie):
+    client.get("/")
+    client.delete_cookie("LASTUSER")
+    if cookie is not None:
+        client.set_cookie("LASTUSER", cookie)
+    response = client.get("/api/portal", headers={"X-Employee-Id": "2069026"})
+    viewer = response.get_json()["viewer"]
+    assert viewer["employee_id"] == "0000000" and viewer["name"] == "아무개"
+    assert viewer["is_admin"] is False
+    assert client.post("/api/schedules", json={"title": "테스트", "question": "질문", "repeat": "매일", "time": "09:30"}).status_code == 403
+    assert client.get("/api/admin/settings").status_code == 403
+
+
+def test_mock_cookie_switch_and_hapi_contract(client, monkeypatch):
+    client.get("/")
+    seen = []
+    def lookup(url, **kwargs):
+        seen.append(kwargs)
+        assert url == "https://directory.example.test"
+        assert kwargs["headers"]["h-api-token"] == "test-only"
+        assert kwargs["json"] == {"bindParams": ["2011111"]}
+        assert kwargs["timeout"] == 5 and kwargs["allow_redirects"] is False
+        return type("Response", (), {"status_code": 200, "json": lambda self: [{"EMPNO": 2011111, "EMP_NM": "새 사용자", "EMAIL": "private@example.test"}]})()
+    monkeypatch.setattr(flask_portal.requests, "post", lookup)
+    client.set_cookie("LASTUSER", "2011111")
+    viewer = client.get("/api/portal").get_json()["viewer"]
+    assert viewer["name"] == "새 사용자" and viewer["employee_id"] == "2011111"
+    assert not viewer["is_admin"]
+    assert client.get("/api/admin/settings").status_code == 403
+    client.get("/static/app.js")
+    assert len(seen) == 1
+    with client.session_transaction() as current:
+        assert "email" not in current
+
+
+def test_mock_name_failure_and_schedule_write_refresh(client, monkeypatch):
+    store = FakeScheduleStore()
+    monkeypatch.setattr(portal_core, "_portal_schedule_store_factory", lambda: store)
+    monkeypatch.setattr(portal_core, "_employee_directory_store_factory", _unexpected_employee_directory_store)
+    def unavailable(*args, **kwargs):
+        raise flask_portal.requests.Timeout("must not leak")
+    monkeypatch.setattr(flask_portal.requests, "post", unavailable)
+    assert client.get("/api/portal").get_json()["viewer"]["name"] == ""
+    monkeypatch.setattr(flask_portal.requests, "post", lambda *args, **kwargs: type("Response", (), {"status_code": 200, "json": lambda self: [{"EMPNO": "2069026", "EMP_NM": "갱신된 이름"}]})())
+    response = client.post("/api/schedules", json={"title": "테스트", "question": "질문", "repeat": "매일", "time": "09:30"})
+    assert response.status_code == 201
+    assert response.get_json()["schedule"]["owner_name"] == "갱신된 이름"
+
+
+def test_sso_ignores_lastuser_and_never_calls_hapi(client, monkeypatch):
+    monkeypatch.setenv("PTMORE_PORTAL_FLASK_AUTH_MODE", "sso")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("SSO must not call H-API")
+    monkeypatch.setattr(flask_portal.requests, "post", forbidden)
+    with client.session_transaction() as current:
+        current.update(emp_no="2011111", emp_name="SSO 사용자", logFlag=True)
+    viewer = client.get("/api/portal").get_json()["viewer"]
+    assert viewer["employee_id"] == "2011111" and viewer["name"] == "SSO 사용자"
 
 
 def test_portal_api_uses_server_side_flask_session_identity_and_profile_url(client) -> None:
