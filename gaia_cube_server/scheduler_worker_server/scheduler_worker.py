@@ -36,6 +36,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from mail_delivery import MailDeliveryError, send_employee_mail
 from dotenv import load_dotenv
 from pymongo import ASCENDING, MongoClient, ReturnDocument
 from pymongo.collection import Collection
@@ -566,7 +567,7 @@ class SchedulerSettings:
             60.0,
             gaia_settings.gaia_timeout_seconds
             + gaia_settings.cube_timeout_seconds
-            + 60.0,
+            + 150.0,
         )
         if self.lease_seconds < minimum_seconds:
             raise SettingsError(
@@ -788,6 +789,8 @@ class MongoScheduleRepository:
                 "schedule_id": schedule_id,
                 "schedule_object_id": str(claimed.document.get("_id", "")),
                 "owner_id": owner_id or "",
+                "registrant_id": str(claimed.document.get("registrant_id") or owner_id or ""),
+                "group_id": str(claimed.document.get("group_id") or schedule_id),
                 "question": question or "",
                 "platform": SCHEDULE_PLATFORM,
                 "session_id": session_id,
@@ -813,6 +816,7 @@ class MongoScheduleRepository:
         completed_at: datetime,
         delivery_status: str,
         worker_id: str,
+        channel_delivery: dict | None = None,
     ) -> None:
         self.runs.update_one(
             {"run_id": run_id},
@@ -822,6 +826,7 @@ class MongoScheduleRepository:
                     "error_category": error_category,
                     "completed_at": _utc_iso(completed_at),
                     "delivery_status": delivery_status,
+                    "channel_delivery": channel_delivery or {},
                     "worker_id": worker_id,
                 }
             },
@@ -957,6 +962,10 @@ class SchedulerWorker:
         delivery_status = "not_sent"
         deactivate = False
         claim_still_current = True
+        cube_enabled = claimed.document.get("cube_enabled", True)
+        mail_enabled = claimed.document.get("mail_enabled", False)
+        channels_valid = isinstance(cube_enabled, bool) and isinstance(mail_enabled, bool) and (cube_enabled or mail_enabled)
+        channel_delivery = {"cube": "not_sent" if cube_enabled else "disabled", "mail": "not_sent" if mail_enabled else "disabled"}
 
         try:
             # A run document is inserted before validation so malformed active
@@ -974,6 +983,8 @@ class SchedulerWorker:
                 raise ScheduleConfigurationError("next_run_at must be an ISO timestamp.")
             if validation_error is not None:
                 raise validation_error
+            if not channels_valid:
+                raise ScheduleConfigurationError("Select at least one valid delivery channel.")
             assert owner_id is not None
             assert question is not None
             # Validate recurrence before invoking GAIA. A broken schedule is
@@ -1004,15 +1015,25 @@ class SchedulerWorker:
                 delivery_status = "skipped_cancelled"
                 LOGGER.info("Scheduled output skipped after Portal change: schedule=%s", schedule_id)
             else:
-                await send_cube_message(
-                    client,
-                    self.gaia_settings,
-                    owner_id,
-                    "",  # personal DM only; no CUBE channel is used for a schedule
-                    build_scheduled_result_message(question, answer),
-                )
-                status = "success"
-                delivery_status = "answer_sent"
+                if cube_enabled:
+                    try:
+                        await send_cube_message(client, self.gaia_settings, owner_id, "",
+                                                build_scheduled_result_message(question, answer))
+                        channel_delivery["cube"] = "sent"
+                    except ExternalApiError:
+                        channel_delivery["cube"] = "failed"
+                if mail_enabled:
+                    try:
+                        channel_delivery["mail"] = await send_employee_mail(
+                            client, owner_id, str(claimed.document.get("registrant_id") or owner_id),
+                            question, answer, can_send=lambda: self._claim_allows_delivery(claimed))
+                    except MailDeliveryError as exc:
+                        channel_delivery["mail"] = str(exc)
+                enabled_results = [v for v in channel_delivery.values() if v != "disabled"]
+                all_sent = all(v == "sent" for v in enabled_results)
+                status = "success" if all_sent else "failed"
+                delivery_status = "answer_sent" if all_sent else "partial_delivery" if "sent" in enabled_results else "answer_delivery_failed"
+                error_category = None if all_sent else "channel_delivery"
                 deactivate = repeat_kind == "once"
         except ScheduleConfigurationError as exc:
             error_category = _safe_error_category(exc, phase="schedule")
@@ -1021,7 +1042,7 @@ class SchedulerWorker:
             # question remain usable. Send one clear, prefixed DM before the
             # schedule is deactivated. Invalid recipient/question documents
             # never send anything.
-            if owner_id and question:
+            if owner_id and question and cube_enabled is True and channels_valid:
                 if not self._claim_allows_delivery(claimed):
                     claim_still_current = False
                     status = "cancelled"
@@ -1049,7 +1070,7 @@ class SchedulerWorker:
             error_category = _safe_error_category(exc, phase="gaia")
             # A GAIA failure still produces one user-visible CUBE response with
             # the exact scheduler prefix. No temporary processing notice is sent.
-            if owner_id and question:
+            if owner_id and question and cube_enabled is True and channels_valid:
                 if not self._claim_allows_delivery(claimed):
                     claim_still_current = False
                     status = "cancelled"
@@ -1117,6 +1138,7 @@ class SchedulerWorker:
                     completed_at=completed_at,
                     delivery_status=delivery_status,
                     worker_id=self.scheduler_settings.worker_id,
+                    channel_delivery=channel_delivery,
                 )
                 if claim_still_current:
                     self.repository.complete_claim(

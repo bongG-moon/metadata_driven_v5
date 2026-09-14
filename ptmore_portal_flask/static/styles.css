@@ -1493,6 +1493,12 @@ body.dialog-open { overflow: hidden; }
 .recipient-avatar { display: inline-flex; vertical-align: middle; align-items: center; justify-content: center; width: 28px; height: 28px; margin-right: 8px; border-radius: 9px; background: #edf1fb; color: #6775b8; }
 .recipient-avatar svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
 .recipient-kind { color: #67758b; font-size: 12px; }
+.schedule-channel-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+#schedule-form .schedule-channel-options label { display: flex; gap: 10px; align-items: center; border: 1px solid #dfe5f1; border-radius: 12px; padding: 14px 10px; cursor: pointer; background: #fafbff; }
+#schedule-form .schedule-channel-options input { width: 17px; height: 17px; accent-color: #5966c7; flex-shrink: 0; }
+.schedule-channel-options label:has(input:checked) { border-color: #8794e2 !important; background: #eff2ff !important; }
+.schedule-channel-options label:has(input:focus-visible) { outline: 2px solid #8794e2; outline-offset: 2px; }
+.schedule-channel-options strong, .schedule-channel-options small { display: block; line-height: 1.6; }
 .recipient-employee-id { font-family: inherit; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .01em; color: #384963; vertical-align: middle; }
 .recipient-remove { border: 0; border-radius: 6px; background: transparent; color: #a74452; padding: 6px 8px; cursor: pointer; }
 .recipient-remove:hover { background: #fff0f1; }

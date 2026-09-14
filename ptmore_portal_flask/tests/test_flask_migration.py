@@ -50,13 +50,33 @@ def test_domain_detail_exposes_sanitized_authoring_text():
     assert detail["selection_criteria"] == "DA 공정 질문"
 
 
+def test_group_delivery_channels_roundtrip(client, monkeypatch):
+    store = FakeScheduleStore()
+    monkeypatch.setattr(portal_core, "_portal_schedule_store_factory", lambda: store)
+    body = {"title": "채널 테스트", "question": "질문", "repeat": "매일", "time": "09:30",
+            "recipient_ids": ["2069026", "2011111"], "cube_enabled": False, "mail_enabled": True}
+    response = client.post("/api/schedules", json=body)
+    assert response.status_code == 201
+    schedule = response.get_json()["schedule"]
+    assert schedule["mail_enabled"] is True and schedule["cube_enabled"] is False
+    assert len(store.documents) == 2
+    for document in store.documents.values():
+        assert document["registrant_id"] == "2069026"
+        assert document["mail_enabled"] is True and document["cube_enabled"] is False
+    assert client.patch(f"/api/schedules/{schedule['id']}", json={"mail_enabled": False}).status_code == 422
+    updated = client.patch(f"/api/schedules/{schedule['id']}", json={"cube_enabled": True, "mail_enabled": False})
+    assert updated.status_code == 200
+    assert all(d["cube_enabled"] and not d["mail_enabled"] for d in store.documents.values())
+    assert client.post("/api/schedules", json={**body, "mail_enabled": False}).status_code == 422
+
+
 def test_mail_adapter_is_explicitly_disconnected():
     from schedule_mail import parse_recipients, build_schedule_email, send_schedule_email
     assert parse_recipients("aaa@sk.com; bbb@sk.com; aaa@sk.com") == ["aaa@sk.com", "bbb@sk.com"]
     with pytest.raises(ValueError):
         parse_recipients(["bad-address"])
     message = build_schedule_email(["aaa@sk.com"], "질문", "답변")
-    assert message["From"] == "ptmore_pkg@sk.com"
+    assert message["From"] == "ptmorepkg.bot@sk.com"
     assert "답변" in message.get_content()
     with pytest.raises(RuntimeError, match="연결되지"):
         send_schedule_email(["aaa@sk.com"], "질문", "답변")

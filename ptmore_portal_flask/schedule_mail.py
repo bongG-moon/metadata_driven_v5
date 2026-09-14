@@ -1,8 +1,8 @@
-"""메일 연동 준비: Worker는 아직 이 모듈을 호출하지 않습니다."""
+"""이전 메일 메시지 생성 호환 도구. 실제 발송은 독립 Worker의 mail_delivery.py 담당."""
 import re
 from email.message import EmailMessage
 
-SENDER = "ptmore_pkg@sk.com"
+SENDER = "ptmorepkg.bot@sk.com"
 
 
 def parse_recipients(value):

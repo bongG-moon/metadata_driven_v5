@@ -1430,8 +1430,7 @@ function renderSchedules() {
         .map((schedule) => {
           const interval = isIntervalSchedule(schedule);
           const ruleLabel = scheduleRuleLabel(schedule);
-          const emailCount = new Set((Array.isArray(schedule.email_recipients) ? schedule.email_recipients : [])
-            .map(address => String(address).trim().toLowerCase()).filter(Boolean)).size;
+          const recipientCount = (schedule.recipient_ids || [schedule.owner_id]).length;
           const timingLabel = interval ? scheduleWindowLabel(schedule) : schedule.next_run;
           const intervalNextRun = interval
             ? `<div><span>다음 실행</span><strong>${escapeHtml(schedule.next_run)}</strong></div>`
@@ -1448,8 +1447,8 @@ function renderSchedules() {
             <div><span>반복</span><strong>${escapeHtml(ruleLabel)}</strong></div>
             <div><span>${interval ? "실행 구간" : "다음 실행"}</span><strong class="${interval ? "interval-window" : ""}">${escapeHtml(timingLabel)}</strong></div>
             ${intervalNextRun}
-            <div><span>실행 대상</span><strong>CUBE 개인 DM · ${(schedule.recipient_ids || [schedule.owner_id]).length}명</strong></div>
-            <div class="schedule-mail-target"><span>메일 수신 대상</span><strong>${emailCount ? `메일 등록 · ${emailCount}명` : "등록 없음"}</strong>${emailCount ? '<small>발송 연동 준비 중</small>' : ""}</div>
+            <div><span>CUBE 수신 대상</span><strong>${schedule.cube_enabled !== false ? `개인 DM · ${recipientCount}명` : "사용 안 함"}</strong></div>
+            <div class="schedule-mail-target"><span>메일 수신 대상</span><strong>${schedule.mail_enabled ? `개별 메일 · ${recipientCount}명` : "사용 안 함"}</strong>${schedule.mail_enabled ? '<small>등록자 CC 포함</small>' : ""}</div>
             <div><span>등록자</span><strong>${escapeHtml(schedule.owner)}</strong></div>
           </div>
           <div class="schedule-card-footer">
@@ -3369,7 +3368,9 @@ function prepareScheduleDrawer(scheduleId = "") {
     form.elements.start_time.value = "09:00";
     form.elements.end_time.value = "18:00";
   }
-  form.elements.email_recipients.value = (schedule?.email_recipients || []).join("; ");
+  form.elements.cube_enabled.checked = schedule?.cube_enabled !== false;
+  form.elements.mail_enabled.checked = schedule?.mail_enabled === true;
+  $("#legacy-mail-note").hidden = !(schedule?.email_recipients?.length);
   syncRepeatPicker();
   enhanceScheduleTimeInputs();
   setupIntervalEditor();
@@ -3381,7 +3382,8 @@ function scheduleRequestPayload(form) {
   const timing = scheduleTimingFromForm(form);
   return {
     recipient_ids: [...new Set(form.elements.recipient_ids.value.split(/[;,\s]+/).filter(Boolean))],
-    email_recipients: [...new Set(form.elements.email_recipients.value.split(/[;,\s]+/).filter(Boolean))],
+    cube_enabled: form.elements.cube_enabled.checked,
+    mail_enabled: form.elements.mail_enabled.checked,
     title: String(form.elements.title.value || "").trim(),
     question: String(form.elements.question.value || "").trim(),
     repeat: timing.repeat,
@@ -3394,6 +3396,10 @@ function scheduleRequestPayload(form) {
 
 async function saveSchedule(form) {
   if (!state.portal || state.scheduleSubmitting) return;
+  if (!form.elements.cube_enabled.checked && !form.elements.mail_enabled.checked) {
+    showToast("CUBE 또는 메일을 하나 이상 선택해 주세요.");
+    return;
+  }
   const timing = scheduleTimingFromForm(form);
   if (!validateScheduleTiming(timing, form)) return;
 

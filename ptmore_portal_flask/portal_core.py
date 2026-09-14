@@ -312,6 +312,8 @@ class ScheduleCreateRequest(BaseModel):
     """
 
     title: str = Field(..., min_length=1, max_length=200)
+    cube_enabled: bool = True
+    mail_enabled: bool = False
     email_recipients: list[str] = Field(default_factory=list, max_length=100)
 
     @field_validator("email_recipients")
@@ -349,6 +351,8 @@ class ScheduleUpdateRequest(BaseModel):
     client cannot transfer or redirect someone else's schedule by editing it.
     """
 
+    cube_enabled: bool | None = None
+    mail_enabled: bool | None = None
     email_recipients: list[str] | None = Field(default=None, max_length=100)
 
     @field_validator("email_recipients")
@@ -371,6 +375,14 @@ class ScheduleUpdateRequest(BaseModel):
     end_time: str | None = Field(default=None, max_length=5)
     run_date: str | None = Field(default=None, max_length=10)
     status: str | None = Field(default=None, max_length=16)
+
+
+def _schedule_delivery_channels(document):
+    cube = document.get("cube_enabled", True)
+    mail = document.get("mail_enabled", False)
+    if not isinstance(cube, bool) or not isinstance(mail, bool) or not (cube or mail):
+        raise HTTPException(status_code=422, detail={"code": "invalid_delivery_channels", "message": "CUBE 또는 메일을 하나 이상 선택해 주세요."})
+    return {"cube_enabled": cube, "mail_enabled": mail}
 
 
 class ScheduleStatusUpdateRequest(BaseModel):
@@ -3580,6 +3592,8 @@ class PortalScheduleStore(Protocol):
 
 
 _SCHEDULE_DOCUMENT_PROJECTION = {
+    "cube_enabled": 1,
+    "mail_enabled": 1,
     "email_recipients": 1,
     "_id": 1,
     "group_id": 1,
@@ -3621,6 +3635,7 @@ _SCHEDULE_RUN_DOCUMENT_PROJECTION = {
     "scheduled_for": 1,
     "started_at": 1,
     "completed_at": 1,
+    "channel_delivery": 1,
 }
 _SCHEDULE_RUN_SCHEDULE_PROJECTION = {
     "_id": 1,
@@ -4328,10 +4343,22 @@ def _dashboard_recent_runs(
                 ),
                 "owner": owner,
                 "status": _schedule_run_status_label(document.get("status")),
-                "target": _SCHEDULE_DELIVERY_TARGET,
+                "target": _run_delivery_label(document.get("channel_delivery")),
             }
         )
     return cards
+
+
+def _run_delivery_label(channels: Any) -> str:
+    if not isinstance(channels, Mapping):
+        return _SCHEDULE_DELIVERY_TARGET
+    labels = []
+    for key, name in (("cube", "CUBE"), ("mail", "메일")):
+        state = channels.get(key, "disabled")
+        if state != "disabled":
+            label = "완료" if state == "sent" else "미발송" if state in ("not_sent", "skipped_cancelled") else "실패"
+            labels.append(f"{name} {label}")
+    return " · ".join(labels) or "발송 채널 없음"
 
 
 def _load_dashboard_recent_schedule_runs() -> tuple[list[dict[str, str]], str]:
@@ -4410,7 +4437,8 @@ def _schedule_response(document: Mapping[str, Any]) -> dict[str, Any]:
         "group_id": document.get("group_id", schedule_id),
         "recipient_ids": document.get("recipient_ids") or [owner_id],
         "email_recipients": document.get("email_recipients") or [],
-        "email_delivery_status": "not_connected",
+        "cube_enabled": document.get("cube_enabled", True),
+        "mail_enabled": document.get("mail_enabled", False),
         "execution_members": document.get("execution_members", []),
         "title": normalized["title"],
         "question": normalized["question"],
@@ -5597,7 +5625,7 @@ def _build_usage_dashboard(
             "status": _schedule_run_display_text(
                 run.get("status"), fallback="완료", maximum=40
             ),
-            "target": _SCHEDULE_DELIVERY_TARGET,
+            "target": _schedule_run_display_text(run.get("target"), fallback=_SCHEDULE_DELIVERY_TARGET, maximum=80),
         }
         for run in (recent_runs or [])
         if isinstance(run, Mapping)
@@ -5913,6 +5941,7 @@ def create_schedule(
         **fields,
         "recipient_ids": request_body.recipient_ids or [access.viewer.employee_id],
         "email_recipients": request_body.email_recipients,
+        **_schedule_delivery_channels(request_body.model_dump()),
         "owner_id": access.viewer.employee_id,
         "owner_name": _schedule_owner_name_for_save(
             access.viewer.employee_id,
@@ -5963,6 +5992,7 @@ def update_schedule(
         values = _schedule_editable_values(existing)
         values.update(patch)
         fields = _schedule_values_or_422(values)
+        fields.update(_schedule_delivery_channels({**existing, **{k: v for k, v in patch.items() if v is not None}}))
         if patch.get("recipient_ids") is not None:
             fields["recipient_ids"] = patch["recipient_ids"]
         if patch.get("email_recipients") is not None:

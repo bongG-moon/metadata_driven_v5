@@ -163,7 +163,7 @@ class SchedulerServiceRuntime:
             30.0,
             float(gaia_settings.gaia_timeout_seconds)
             + float(gaia_settings.cube_timeout_seconds)
-            + 15.0,
+            + 105.0,
         )
         self._ready = True
         self._task = asyncio.create_task(
