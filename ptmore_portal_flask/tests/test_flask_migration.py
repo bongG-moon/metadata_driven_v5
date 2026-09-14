@@ -39,6 +39,30 @@ portal_core = flask_portal.portal_core
 application = flask_portal.app
 
 
+@pytest.mark.parametrize("channels,expected", [
+    ({"cube": "sent", "mail": "sent"}, "개인 DM / 메일"),
+    ({"cube": "disabled", "mail": "sent"}, "메일"),
+    ({"cube": "sent", "mail": "disabled"}, "개인 DM"),
+    ({"cube": "sent", "mail": "smtp_failed_or_uncertain"}, "개인 DM / 메일"),
+    (None, portal_core._SCHEDULE_DELIVERY_TARGET),
+])
+def test_recent_run_channels_survive_mongo_reader(channels, expected):
+    class Cursor(list):
+        def sort(self, *args): return self
+        def limit(self, *args): return self
+
+    class Runs:
+        def find(self, query, projection):
+            assert projection["channel_delivery"] == 1
+            return Cursor([{"owner_id": "2069026", "channel_delivery": channels}])
+
+    reader = object.__new__(portal_core.MongoPortalScheduleRunReader)
+    reader._runs = Runs()
+    reader._mongo_error = RuntimeError
+    rows = reader.list_recent_runs(8)
+    assert portal_core._dashboard_recent_runs(rows)[0]["target"] == expected
+
+
 def test_domain_detail_exposes_sanitized_authoring_text():
     detail = portal_core._live_metadata_detail_item("domain", {
         "section": "process_groups", "key": "DA", "status": "active",

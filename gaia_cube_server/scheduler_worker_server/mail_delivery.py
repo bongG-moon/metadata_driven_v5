@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import os
 import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from mail_renderer import render_mail
 
 SENDER = "ptmorepkg.bot@sk.com"
 
@@ -68,10 +68,7 @@ def build_message(recipient, registrant, question, answer):
     message["Subject"] = "[PTMORE PKG Agent] 스케줄링 실행 결과"
     text = f"안녕하세요! PTMORE PKG Agent 스케줄링 실행 결과입니다 😀.\n실행 질문: {question}\n\n{answer}"
     message.attach(MIMEText(text, "plain", "utf-8"))
-    message.attach(MIMEText('<div style="font-family:Arial,Malgun Gothic,sans-serif;color:#334155;padding:24px">'
-                           '<h2 style="font-size:18px">PTMORE PKG Agent 스케줄링 실행 결과</h2>'
-                           f'<p><b>실행 질문:</b> {html.escape(question)}</p>'
-                           f'<div style="white-space:pre-wrap;line-height:1.7">{html.escape(answer)}</div></div>', "html", "utf-8"))
+    message.attach(MIMEText(render_mail(question, answer), "html", "utf-8"))
     return message, list(dict.fromkeys([to, cc]))
 
 

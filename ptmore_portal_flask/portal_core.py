@@ -3754,6 +3754,11 @@ class MongoPortalScheduleRunReader:
                     "scheduled_for": document.get("scheduled_for"),
                     "started_at": document.get("started_at"),
                     "completed_at": document.get("completed_at"),
+                    "channel_delivery": {
+                        key: ("disabled" if value == "disabled" else "sent" if value == "sent" else "failed")
+                        for key, value in document.get("channel_delivery", {}).items()
+                        if key in ("cube", "mail")
+                    } if isinstance(document.get("channel_delivery"), Mapping) else None,
                     "schedule_title": (
                         (schedule.get("title") or "")
                         if isinstance(schedule, Mapping)
@@ -4353,12 +4358,11 @@ def _run_delivery_label(channels: Any) -> str:
     if not isinstance(channels, Mapping):
         return _SCHEDULE_DELIVERY_TARGET
     labels = []
-    for key, name in (("cube", "CUBE"), ("mail", "메일")):
+    for key, name in (("cube", "개인 DM"), ("mail", "메일")):
         state = channels.get(key, "disabled")
         if state != "disabled":
-            label = "완료" if state == "sent" else "미발송" if state in ("not_sent", "skipped_cancelled") else "실패"
-            labels.append(f"{name} {label}")
-    return " · ".join(labels) or "발송 채널 없음"
+            labels.append(name)
+    return " / ".join(labels) or "발송 채널 없음"
 
 
 def _load_dashboard_recent_schedule_runs() -> tuple[list[dict[str, str]], str]:
