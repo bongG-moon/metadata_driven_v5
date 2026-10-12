@@ -2,10 +2,9 @@
 
 Phoenix keeps a short retention window.  This module persists only the small
 ``GaiA Input`` projection that the Portal dashboard needs, never raw span
-attributes or credentials.  A successful Phoenix refresh replaces the
-configured project's records for every queried KST date, so corrected or
-late-arriving traces overwrite prior archive rows while dates with no records
-are also accurately represented.
+attributes or credentials. Refreshes merge by project/trace identity: returned
+rows are updated, new rows added, and missing rows retained after Phoenix
+retention/deletion. Completion markers record coverage, not deletion intent.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ _RUNTIME_SETTING_NAMES = (
 )
 # One sentinel document in the archive collection serializes full refreshes
 # across Uvicorn processes/instances.  It has no source_project/usage_date and
-# is therefore naturally excluded from dashboard reads and stale-row deletes.
+# is therefore naturally excluded from dashboard reads.
 _SYNC_LOCK_DOCUMENT_ID = "__portal_usage_history_sync_lock__"
 _SYNC_LOCK_LEASE_SECONDS = 120
 _SYNC_LOCK_WAIT_SECONDS = 15.0
@@ -230,10 +229,9 @@ class MongoUsageHistoryArchive:
     ) -> UsageHistoryArchiveRefresh:
         """Synchronize one fully fetched Phoenix period into the archive.
 
-        Callers must supply records only after all configured Phoenix projects
-        have completed successfully.  The method writes/upserts all current
-        rows first; stale rows are removed only after those writes finish, so a
-        failed write never turns a temporary error into an empty date range.
+        Callers supply only fully fetched results. Missing Phoenix rows never
+        delete archived history. Per-trace generation checks still prevent
+        older requests from overwriting newer values.
         """
 
         if start_day > end_day:
@@ -294,17 +292,14 @@ class MongoUsageHistoryArchive:
                 if not document_written:
                     # A later generation owns this trace.  Do not publish a
                     # scope marker for an incomplete/older view and do not
-                    # run stale deletion for it.
+                    # mark this incomplete scope as covered.
                     raise UsageHistoryArchiveError(
                         "더 최신 사용 이력 동기화 결과가 있어 현재 결과를 저장하지 않았습니다."
                     )
                 written_count += 1
 
-            # Mark every successfully queried (project, KST date) scope,
-            # including dates where Phoenix returned zero rows.  The marker is
-            # written only after every current data row has succeeded.  Reads
-            # use it as a durable generation fence if an expired old lease
-            # later inserts a stale row after the newer refresh deleted it.
+            # Coverage includes zero-result days, but merge markers explicitly
+            # retain previously archived generations in dashboard/export reads.
             for marker in _scope_marker_documents(
                 projects,
                 start_day=start_day,
@@ -322,20 +317,7 @@ class MongoUsageHistoryArchive:
                     )
 
             self._renew_sync_lock(owner=refresh_id)
-            stale_filter = {
-                "source_project": {"$in": list(projects)},
-                "usage_date": {
-                    "$gte": start_day.isoformat(),
-                    "$lte": end_day.isoformat(),
-                },
-                "archive_refresh_id": {"$ne": refresh_id},
-                "$or": [
-                    {"refresh_started_at": {"$lt": sync_started_at}},
-                    {"refresh_started_at": {"$exists": False}},
-                ],
-                "record_type": {"$ne": _SCOPE_MARKER_RECORD_TYPE},
-            }
-            removal = self._run(lambda: self._collection.delete_many(stale_filter))
+            # Retention/deletion in Phoenix is not a request to erase the archive.
             self._complete_and_release_sync_lock(
                 owner=refresh_id,
                 completed_generation=sync_started_at,
@@ -347,7 +329,7 @@ class MongoUsageHistoryArchive:
                 end_date=end_day.isoformat(),
                 project_count=len(projects),
                 upserted_count=written_count,
-                removed_count=int(getattr(removal, "deleted_count", 0) or 0),
+                removed_count=0,
             )
         finally:
             if lock_acquired and not completed:
@@ -363,8 +345,8 @@ class MongoUsageHistoryArchive:
 
         A single collection-wide lease is intentionally conservative: dashboard
         refreshes are small and infrequent, while serializing them avoids a
-        cross-process race where an older zero/partial result can recreate a
-        record the newer result removed.  The completed generation is retained
+        cross-process race where older results can overwrite newer values.
+        The completed generation is retained
         in the sentinel after release as a durable fencing marker.
         """
 
@@ -627,6 +609,7 @@ class MongoUsageHistoryArchive:
             "user_name": 1,
             "question": 1,
             "refresh_started_at": 1,
+            "archive_mode": 1,
         }
         documents = self._run(
             lambda: list(
@@ -635,13 +618,9 @@ class MongoUsageHistoryArchive:
                 )
             )
         )
-        # A scope marker is written only after a complete Phoenix result has
-        # been stored for that project/day.  It makes the marker generation
-        # authoritative for reads.  This is deliberately a read-time fence in
-        # addition to the Mongo lease: if an old worker's insert resumes after
-        # its lease expired and a newer empty refresh completed, the old row is
-        # harmlessly invisible even though it can no longer be deleted by the
-        # newer refresh.
+        # Legacy snapshot markers retain their original fence until refreshed.
+        # Merge markers mean old rows remain valid even if Phoenix no longer has them.
+        merge_scopes: set[tuple[str, str]] = set()
         scope_generations: dict[tuple[str, str], str] = {}
         data_documents: list[Mapping[str, Any]] = []
         for document in documents:
@@ -650,6 +629,8 @@ class MongoUsageHistoryArchive:
             project = _text(document.get("source_project"))
             usage_date = _text(document.get("usage_date"))
             if document.get("record_type") == _SCOPE_MARKER_RECORD_TYPE:
+                if document.get("archive_mode") == "merge":
+                    merge_scopes.add((project, usage_date))
                 generation = _text(document.get("refresh_started_at"))
                 if project and usage_date and generation:
                     scope = (project, usage_date)
@@ -670,14 +651,11 @@ class MongoUsageHistoryArchive:
                 "trace_id": _text(document.get("trace_id")),
                 "date": _text(document.get("usage_date")),
             }
-            # Pre-marker (legacy) rows remain readable until the first
-            # successful synchronized result establishes a generation for the
-            # scope.  Once a marker exists, only that exact generation is
-            # considered part of the complete project/day snapshot.
+            # Snapshot-era scopes keep their fence; refreshed merge scopes keep all history.
             marker_generation = scope_generations.get(
                 (record["project"], record["date"])
             )
-            if marker_generation and _text(document.get("refresh_started_at")) != marker_generation:
+            if (record["project"], record["date"]) not in merge_scopes and marker_generation and _text(document.get("refresh_started_at")) != marker_generation:
                 continue
             if record["query_time"] and record["project"]:
                 records.append(record)
@@ -841,12 +819,7 @@ def _scope_marker_documents(
     refresh_id: str,
     refresh_started_at: str,
 ) -> list[dict[str, str]]:
-    """Build one durable completion marker per queried project/KST day.
-
-    A marker intentionally exists for zero-result days.  That lets a newer
-    empty Phoenix result fence out a late insert from an older request even if
-    the older process resumes after the newer stale-row cleanup has completed.
-    """
+    """Record completed project/day coverage without invalidating old rows."""
 
     markers: list[dict[str, str]] = []
     current_day = start_day
@@ -864,6 +837,7 @@ def _scope_marker_documents(
                 {
                     "_id": f"{_SCOPE_MARKER_DOCUMENT_PREFIX}:{marker_digest}",
                     "record_type": _SCOPE_MARKER_RECORD_TYPE,
+                    "archive_mode": "merge",
                     "source_project": project,
                     "usage_date": usage_date,
                     "archive_refresh_id": refresh_id,

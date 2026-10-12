@@ -15,6 +15,19 @@ sys.path.insert(0, str(ROOT))
 import usage_history_archive as archive_module
 
 
+@pytest.fixture(autouse=True, params=["ptmore_portal", "ptmore_portal_flask"])
+def archive_implementation(request, monkeypatch):
+    import importlib.util
+    path = ROOT.parent / request.param / "usage_history_archive.py"
+    monkeypatch.syspath_prepend(str(path.parent))
+    name = "_archive_test_" + request.param
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(globals(), "archive_module", module)
+
+
 class _Result:
     def __init__(
         self,
@@ -206,7 +219,7 @@ def test_archive_identity_keeps_same_trace_id_in_different_projects_separate() -
     assert first != second
 
 
-def test_refresh_upserts_then_removes_stale_rows_for_successfully_queried_dates() -> None:
+def test_refresh_merges_and_retains_missing_rows() -> None:
     archive, client = _archive()
     start_day = date(2026, 8, 10)
     end_day = date(2026, 8, 11)
@@ -223,7 +236,7 @@ def test_refresh_upserts_then_removes_stale_rows_for_successfully_queried_dates(
 
     assert first.upserted_count == 3
     assert first.removed_count == 0
-    assert client.collection.events[-1] == "delete"
+    assert "delete" not in client.collection.events
     assert client.collection.events[:6] == [
         "replace",
         "insert",
@@ -234,7 +247,7 @@ def test_refresh_upserts_then_removes_stale_rows_for_successfully_queried_dates(
     ]
 
     # A later, fully successful Phoenix query returns no project-a record for
-    # 8/11.  The stale project-a row is removed, while project-b is untouched
+    # 8/11. The project-a archive is retained, while project-b is untouched
     # because it was not part of this successfully queried project scope.
     client.collection.events.clear()
     second = archive.refresh(
@@ -246,10 +259,11 @@ def test_refresh_upserts_then_removes_stale_rows_for_successfully_queried_dates(
 
     rows = archive.read_records(start_day=start_day, end_day=end_day)
     assert second.upserted_count == 1
-    assert second.removed_count == 1
-    assert client.collection.events == ["replace", "delete"]
+    assert second.removed_count == 0
+    assert client.collection.events == ["replace"]
     assert [(row["project"], row["trace_id"], row["question"]) for row in rows] == [
         ("project-a", "trace-1", "정정된 DA 생산량"),
+        ("project-a", "trace-2", "DA 생산량 알려줘"),
         ("project-b", "trace-other", "DA 생산량 알려줘"),
     ]
     assert all("archive_refresh_id" not in row for row in rows)
@@ -295,7 +309,8 @@ def test_covered_scopes_uses_completed_markers_for_zero_record_days_and_filters_
 
     # Scope markers are an internal cache-completeness mechanism, never rows
     # shown through the public dashboard-record adapter.
-    assert archive.read_records(start_day=start_day, end_day=end_day) == [
+    assert [{k: v for k, v in row.items() if k != "user_name"}
+            for row in archive.read_records(start_day=start_day, end_day=end_day)] == [
         {
             "query_time": "2026-08-10T09:00:00+09:00",
             "platform": "CUBE",
@@ -347,35 +362,16 @@ def test_archive_fallback_identity_is_deterministic_without_trace_id() -> None:
 def test_older_refresh_does_not_delete_a_newer_concurrent_refresh_row() -> None:
     archive, client = _archive()
     collection = client.collection
-    original_delete_many = collection.delete_many
-
-    def interleaved_delete(selector):
-        # Emulate a newer dashboard request that completed its upsert after the
-        # current request began but before its stale-row cleanup executes.
-        collection.documents["phoenix:newer-refresh"] = {
-            "_id": "phoenix:newer-refresh",
-            "source_project": "project-a",
-            "trace_id": "newer-trace",
-            "usage_date": "2026-08-10",
-            "query_time": "2026-08-10T09:30:00+09:00",
-            "platform": "CUBE",
-            "user_id": "2071044",
-            "question": "더 최신 Phoenix 결과",
-            "archive_refresh_id": "newer-request",
-            "last_refreshed_at": "9999-12-31T23:59:59+00:00",
-            "refresh_started_at": "9999-12-31T23:59:59+00:00",
-        }
-        return original_delete_many(selector)
-
-    collection.delete_many = interleaved_delete
-    archive.refresh(
-        [_record("older-trace")],
-        start_day=date(2026, 8, 10),
-        end_day=date(2026, 8, 10),
-        source_projects=("project-a",),
-    )
-
+    collection.documents["phoenix:newer-refresh"] = {
+        "_id": "phoenix:newer-refresh", "source_project": "project-a",
+        "trace_id": "newer-trace", "usage_date": "2026-08-10",
+        "query_time": "2026-08-10T09:30:00+09:00",
+        "refresh_started_at": "9999-12-31T23:59:59+00:00",
+    }
+    archive.refresh([_record("older-trace")], start_day=date(2026, 8, 10),
+                    end_day=date(2026, 8, 10), source_projects=("project-a",))
     assert "phoenix:newer-refresh" in collection.documents
+    assert "delete" not in collection.events
 
 
 def test_older_refresh_cannot_overwrite_newer_same_trace_document() -> None:
@@ -469,8 +465,8 @@ def test_late_phoenix_completion_uses_fetch_start_generation_not_mongo_arrival()
     assert document_id not in client.collection.documents
 
 
-def test_expired_old_lease_late_insert_is_hidden_by_newer_empty_scope_marker() -> None:
-    """A late insert cannot resurrect a record after a newer empty scope wins."""
+def test_expired_lease_stops_writer_but_empty_merge_does_not_hide_history() -> None:
+    """An empty merge cannot erase valid history; the stale writer still loses its lease."""
 
     archive_a, client = _archive()
     config = archive_module.UsageHistoryArchiveConfig(
@@ -523,11 +519,9 @@ def test_expired_old_lease_late_insert_is_hidden_by_newer_empty_scope_marker() -
 
     assert triggered is True
     assert newer_refreshes[0].upserted_count == 0
-    # The old process did physically finish its direct insert after B removed
-    # stale rows.  The durable project/day generation marker nevertheless
-    # keeps that old row out of Portal reads and CSV exports.
+    # A historical row arriving late is retained under merge semantics.
     assert document_id in collection.documents
-    assert archive_a.read_records(start_day=day, end_day=day) == []
+    assert [row["trace_id"] for row in archive_a.read_records(start_day=day, end_day=day)] == ["late-after-expiry"]
 
 
 def test_scope_marker_rejects_an_older_generation() -> None:
@@ -556,3 +550,36 @@ def test_scope_marker_rejects_an_older_generation() -> None:
     ) is False
     stored_marker = client.collection.documents[old_marker["_id"]]
     assert stored_marker["refresh_started_at"] == "2026-08-10T10:00:00+00:00"
+
+def test_empty_refresh_preserves_existing_history_and_coverage():
+    archive, client = _archive()
+    day = date(2026, 8, 10)
+    archive.refresh([_record("kept")], start_day=day, end_day=day,
+                    source_projects=("project-a",), refresh_started_at="2026-08-11T00:00:00+00:00")
+    result = archive.refresh([], start_day=day, end_day=day,
+                    source_projects=("project-a",), refresh_started_at="2026-08-12T00:00:00+00:00")
+    assert result.removed_count == 0
+    assert [row["trace_id"] for row in archive.read_records(start_day=day, end_day=day)] == ["kept"]
+    assert "delete" not in client.collection.events
+    # Analytics/export must include preserved rows from older generations too.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_analytics_merge_test", ROOT.parent / "usage_analytics" / "aggregate_usage.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert len(module.read_records(client.collection, day, day)) == 1
+
+
+def test_repeated_partial_refresh_adds_new_and_updates_same_without_duplicates():
+    archive, client = _archive()
+    day = date(2026, 8, 10)
+    for number, records in enumerate([
+        [_record("one"), _record("two")],
+        [_record("one", question="updated"), _record("three")],
+        [_record("one", question="updated"), _record("three")],
+    ], 1):
+        archive.refresh(records, start_day=day, end_day=day, source_projects=("project-a",),
+                        refresh_started_at=f"2026-08-1{number}T00:00:00+00:00")
+    rows = archive.read_records(start_day=day, end_day=day)
+    assert len(rows) == 3
+    assert {r["trace_id"]: r["question"] for r in rows}["one"] == "updated"
+    assert "delete" not in client.collection.events

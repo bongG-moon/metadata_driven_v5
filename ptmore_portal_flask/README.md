@@ -117,3 +117,16 @@ PTMORE_METADATA_LIVE_COLLECTION_MAP_JSON = {
 ```
 
 이 설정은 Portal의 목록 표시 전용입니다. Portal은 Flow API 호출에 MongoDB URI·데이터베이스·컬렉션 등의 설정을 보내지 않으며, Flow의 MongoDB 연결 설정을 덮어쓰지 않습니다.
+
+## Phoenix 삭제 후 사용 이력 보존
+
+사용 이력 갱신은 프로젝트·trace ID 기준 병합 방식입니다. 새 이력은 추가하고,
+재조회된 동일 이력은 갱신하지만 Phoenix 조회 결과에서 사라진 기존 MongoDB 행은
+삭제하지 않습니다. 빈 결과와 최근 3주 전체 새로고침에도 동일하게 적용됩니다.
+완료 표시 문서의 `archive_mode=merge`는 이전 갱신분도 화면·내보내기에 포함함을 뜻합니다.
+기존 문서는 다음 정상 갱신 시 자동으로 이 방식으로 전환됩니다.
+
+Phoenix 정리 전에 이 수정본을 모든 Portal 프로세스에 배포하고 재시작하세요.
+별도 집계 도구는 수정된 `usage_analytics/aggregate_usage.py`를 함께 사용하세요.
+구버전 Portal이 같이 실행되면 기존 삭제 로직이 남으므로 안전하지 않습니다.
+이미 MongoDB에서 삭제된 데이터는 이 변경만으로 복구되지 않습니다.
