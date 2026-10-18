@@ -39,6 +39,42 @@ portal_core = flask_portal.portal_core
 application = flask_portal.app
 
 
+@pytest.mark.parametrize("failure", [None, "fetch", "save", "dispatch"])
+def test_phoenix_cleanup_only_after_archive_success(monkeypatch, failure):
+    from datetime import date
+    from types import SimpleNamespace
+    import phoenix_archive_cleanup
+    events = []
+    config = SimpleNamespace()
+    class Archive:
+        def refresh(self, *args, **kwargs):
+            events.append("save")
+            if failure == "save":
+                raise RuntimeError("save failed")
+            return SimpleNamespace(upserted_count=1, removed_count=0)
+        def close(self): events.append("close")
+    def fetch(*args, **kwargs):
+        events.append("fetch")
+        if failure == "fetch":
+            raise portal_core.PhoenixUsageUnavailableError("offline")
+        return [{"trace_id": "a" * 32}]
+    def dispatch(*args):
+        events.append("dispatch")
+        if failure == "dispatch": raise RuntimeError("thread failed")
+    monkeypatch.setattr(portal_core, "_fetch_phoenix_usage_range", fetch)
+    monkeypatch.setattr(portal_core, "_get_usage_history_archive", Archive)
+    monkeypatch.setattr(portal_core, "_usage_history_archive_config_from_env", lambda: config)
+    monkeypatch.setattr(phoenix_archive_cleanup, "schedule_cleanup", dispatch)
+    day = date(2026, 10, 18)
+    if failure in ("fetch", "save"):
+        with pytest.raises(portal_core.HTTPException):
+            portal_core._refresh_usage_archive_ranges(config, ranges=[(day, day)], source_projects=("p",))
+        assert "dispatch" not in events
+    else:
+        assert portal_core._refresh_usage_archive_ranges(config, ranges=[(day, day)], source_projects=("p",)) == (1, 0, 1)
+        assert events == ["fetch", "save", "dispatch", "close"]
+
+
 @pytest.mark.parametrize("channels,expected", [
     ({"cube": "sent", "mail": "sent"}, "개인 DM / 메일"),
     ({"cube": "disabled", "mail": "sent"}, "메일"),

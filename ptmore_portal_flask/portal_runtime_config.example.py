@@ -88,3 +88,6 @@ PTMORE_PHOENIX_PAGE_SIZE = 500
 PTMORE_PHOENIX_FILTER_CONDITION = "span_kind == 'CHAIN'"
 # 이 이름으로 시작하는 Span만 실제 Agent 질의로 집계합니다.
 PTMORE_PHOENIX_SPAN_NAME_PREFIX = "GaiA Input"
+
+# MongoDB 저장 확인 후 최근 3일 이전 Phoenix trace 자동 정리. False로 중지합니다.
+PTMORE_PHOENIX_ARCHIVE_CLEANUP_ENABLED = True

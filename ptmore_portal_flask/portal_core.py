@@ -1082,6 +1082,13 @@ def _refresh_usage_archive_ranges(
             )
             upserted_count += int(getattr(refresh, "upserted_count", 0) or 0)
             removed_count += int(getattr(refresh, "removed_count", 0) or 0)
+        # Only after every MongoDB range write succeeds. Never wait for cleanup
+        # in the request, and never turn a cleanup failure into a save failure.
+        try:
+            from phoenix_archive_cleanup import schedule_cleanup
+            schedule_cleanup(configuration, _usage_history_archive_config_from_env())
+        except Exception as exc:
+            logger.warning("Phoenix cleanup scheduling failed (%s); archive retained", type(exc).__name__)
         return upserted_count, removed_count, sum(
             (range_end - range_start).days + 1
             for range_start, range_end, _, _ in staged

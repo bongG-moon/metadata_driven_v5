@@ -130,3 +130,30 @@ Phoenix 정리 전에 이 수정본을 모든 Portal 프로세스에 배포하�
 별도 집계 도구는 수정된 `usage_analytics/aggregate_usage.py`를 함께 사용하세요.
 구버전 Portal이 같이 실행되면 기존 삭제 로직이 남으므로 안전하지 않습니다.
 이미 MongoDB에서 삭제된 데이터는 이 변경만으로 복구되지 않습니다.
+
+### MongoDB 보관 확인 후 Phoenix 자동 정리
+
+Flask의 정상 사용 이력 갱신(일반/전체 새로고침)이 MongoDB 저장까지 성공하면
+백그라운드 스레드로 정리를 요청합니다. 프로젝트·trace ID와 완료 표시를 다시
+조회해 저장을 확인하며, 한국 시간 오늘 포함 최근 3개 날짜는 항상 보존합니다.
+최근 구간까지 이어진 trace 및 마지막 MongoDB 조회 이후 끝난 trace는 건너뜁니다.
+MongoDB에 없는 trace는 삭제하지 않습니다. 저장된 질문 이력은 지우지 않습니다.
+
+기존 Phoenix 주소/키와 MongoDB 설정을 재사용합니다. Python 설정의
+`PTMORE_PHOENIX_ARCHIVE_CLEANUP_ENABLED = False`로 정리를 중지할 수 있습니다
+(기본 True). Phoenix 키에는 trace 삭제 권한이 필요하며 미지원 API/권한 오류는
+정리만 중단하고 로그를 남깁니다. UI 요청은 삭제 완료를 기다리지 않습니다.
+
+한 번에 최대 30개, 약 45초 작업 예산(진행 중 요청 시간은 추가 가능), 최소
+5분 간격으로 처리합니다. 프로세스 내 잠금과 MongoDB lease로 중복을 방지합니다.
+별도 상주 서버/타이머는 없으며 다음 성공적인 웹 갱신 때 남은 대상을 처리합니다.
+백그라운드 스레드는 웹 프로세스 종료 시 중단되므로 완료가 보장되는 배치 서버는 아닙니다.
+
+아카이브 컬렉션의 `__portal_phoenix_cleanup_lock__` 문서에는 최근 실행 요약이,
+`__phoenix_cleanup_state__:` 문서에는 trace별 처리 상태가 남습니다. 이 제어 문서는
+사용량 집계에서 제외됩니다. `requested`/`uncertain`은 결과 불명 상태라 자동 삭제를
+재시도하지 않습니다. 운영자가 Phoenix와 로그를 확인한 뒤 수동 조치해야 합니다.
+
+배포 파일: `portal_core.py`, `phoenix_archive_cleanup.py`, `usage_history_archive.py`.
+모든 Flask 프로세스를 함께 교체·재시작하세요. 전체 span/답변은 MongoDB에
+백업되지 않으므로 Phoenix 삭제 시 소실됩니다. 파일 용량 회수는 별도 DB 유지보수입니다.
